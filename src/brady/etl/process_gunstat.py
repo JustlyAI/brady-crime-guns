@@ -2,13 +2,15 @@
 """
 Brady ETL - Process Real DE Gunstat Data
 
-Processes DE Gunstat Excel file and outputs normalized CSV.
+Processes DE Gunstat Excel file and outputs normalized CSV + SQLite.
 """
 
 import pandas as pd
 import re
 from pathlib import Path
 from termcolor import cprint
+
+from brady.etl.database import load_df_to_db, get_db_path
 
 
 def get_project_root() -> Path:
@@ -215,6 +217,14 @@ def main(input_path: str = None, output_path: str = None):
             'jurisdiction_method': 'IMPLICIT',
             'jurisdiction_confidence': 'HIGH',
 
+            # Crime location fields (to be populated by classifier agents)
+            'crime_location_state': None,
+            'crime_location_city': None,
+            'crime_location_zip': None,
+            'crime_location_court': None,
+            'crime_location_pd': None,
+            'crime_location_reasoning': None,
+
             # Dealer (Tier 3)
             'dealer_name': ffl_info['dealer_name'],
             'dealer_city': ffl_info['dealer_city'],
@@ -266,6 +276,12 @@ def main(input_path: str = None, output_path: str = None):
     events_df.to_csv(events_path, index=False, encoding="utf-8")
 
     cprint(f"\nSaved {len(events_df)} records to {events_path}", "green")
+
+    # Also save to SQLite database
+    cprint("\nSaving to SQLite database...", "yellow")
+    db_path = get_db_path()
+    load_df_to_db(events_df, table_name="crime_gun_events", db_path=db_path)
+    cprint(f"Saved to SQLite: {db_path}", "green")
 
     # Summary stats
     cprint("\n" + "=" * 60, "cyan")
