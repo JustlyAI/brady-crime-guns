@@ -1,0 +1,26 @@
+# Brady Gun Center - Crime Gun Supply Chain Analysis
+# Install with: pip install -r requirements.txt
+
+# Core dependencies
+pandas>=2.0.0
+numpy>=1.24.0
+openpyxl>=3.1.0
+
+# Dashboard
+streamlit>=1.28.0
+plotly>=5.18.0
+
+# CLI output
+termcolor>=2.3.0
+
+# Data validation
+pydantic>=2.0.0
+
+# Google Drive integration (optional)
+google-api-python-client>=2.100.0
+google-auth-httplib2>=0.1.1
+google-auth-oauthlib>=1.1.0
+gspread>=5.12.0
+
+# Progress bars (optional)
+tqdm>=4.65.0
