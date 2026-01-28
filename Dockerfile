@@ -28,17 +28,15 @@ RUN useradd --create-home --shell /bin/bash appuser
 WORKDIR /app
 
 # Copy dependency files first (for better caching)
-COPY pyproject.toml ./
 COPY requirements.txt ./
 
 # Install Python dependencies
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt && \
-    pip install --no-cache-dir -e .
+    pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY src/ ./src/
-COPY data/ ./data/
+# Note: data/ not copied - using PostgreSQL via DATABASE_URL in production
 
 # Create Streamlit config directory and config
 RUN mkdir -p /home/appuser/.streamlit

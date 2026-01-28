@@ -16,6 +16,10 @@ termcolor>=2.3.0
 # Data validation
 pydantic>=2.0.0
 
+# Database (PostgreSQL for production)
+psycopg2-binary>=2.9.0
+sqlalchemy>=2.0.0
+
 # Google Drive integration (optional)
 google-api-python-client>=2.100.0
 google-auth-httplib2>=0.1.1
