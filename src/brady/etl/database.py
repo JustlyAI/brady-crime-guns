@@ -1,29 +1,51 @@
 #!/usr/bin/env python3
 """
-Brady Gun Center - SQLite Database Module
-MVP Version - Delaware Focus
+Brady Gun Center - Database Module
+Supports PostgreSQL (Railway) and SQLite (local development)
 
-Lightweight SQLite implementation for crime gun data storage.
+Uses DATABASE_URL environment variable for PostgreSQL connection.
+Falls back to SQLite when DATABASE_URL is not set.
 """
 
+import os
 import sqlite3
-import pandas as pd
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Literal, Optional, Union
+
+import pandas as pd
 from termcolor import cprint
 
 from brady.utils import get_project_root
 
+# Type alias for database connections
+try:
+    import psycopg2.extensions
+    Connection = Union[sqlite3.Connection, psycopg2.extensions.connection]
+except ImportError:
+    Connection = sqlite3.Connection  # type: ignore
+
+
+def get_database_url() -> Optional[str]:
+    """Get DATABASE_URL from environment. Returns None for SQLite fallback."""
+    return os.environ.get("DATABASE_URL")
+
+
+def is_postgres() -> bool:
+    """Check if we're using PostgreSQL (DATABASE_URL is set)."""
+    url = get_database_url()
+    return url is not None and url.startswith(("postgres://", "postgresql://"))
+
 
 def get_db_path() -> Path:
-    """Get the SQLite database path."""
+    """Get the SQLite database path (for local development)."""
     return get_project_root() / "data" / "brady.db"
 
 
-# Schema definition with new crime location columns
-SCHEMA = """
+# PostgreSQL schema
+SCHEMA_POSTGRES = """
 CREATE TABLE IF NOT EXISTS crime_gun_events (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id SERIAL PRIMARY KEY,
 
     -- Source traceability
     source_dataset TEXT,
@@ -36,7 +58,7 @@ CREATE TABLE IF NOT EXISTS crime_gun_events (
     jurisdiction_method TEXT,
     jurisdiction_confidence TEXT,
 
-    -- NEW: Crime location fields (to be populated by classifier agents)
+    -- Crime location fields (populated by classifier agents)
     crime_location_state TEXT,
     crime_location_city TEXT,
     crime_location_zip TEXT,
@@ -71,11 +93,11 @@ CREATE TABLE IF NOT EXISTS crime_gun_events (
     ttr_category TEXT,
 
     -- Timing (computed)
-    sale_date TEXT,           -- YYYY-MM-DD (normalized from purchase_date)
-    crime_date TEXT,          -- YYYY-MM-DD (sale_date + time_to_recovery)
-    time_to_crime INTEGER,    -- Days as integer
-    court TEXT,               -- Full court name from lookup
-    case_number_clean TEXT,   -- Normalized case number format
+    sale_date TEXT,
+    crime_date TEXT,
+    time_to_crime INTEGER,
+    court TEXT,
+    case_number_clean TEXT,
 
     -- Risk indicators
     has_nibin INTEGER DEFAULT 0,
@@ -83,15 +105,15 @@ CREATE TABLE IF NOT EXISTS crime_gun_events (
     is_interstate INTEGER DEFAULT 0,
 
     -- Crime Gun DB specific fields
-    in_dl2_program INTEGER,           -- 2022/23/24 DL2 FFL?
-    is_top_trace_ffl INTEGER,         -- Top trace FFL?
-    is_revoked INTEGER,               -- Revoked FFL?
-    is_charged_or_sued INTEGER,       -- FFL charged/sued?
-    case_name TEXT,                   -- Case citation
-    trafficking_origin TEXT,          -- Origin state code
-    trafficking_destination TEXT,     -- Destination state code
-    is_southwest_border INTEGER,      -- Trafficking to Mexico border
-    facts_narrative TEXT,             -- Case facts
+    in_dl2_program INTEGER,
+    is_top_trace_ffl INTEGER,
+    is_revoked INTEGER,
+    is_charged_or_sued INTEGER,
+    case_name TEXT,
+    trafficking_origin TEXT,
+    trafficking_destination TEXT,
+    is_southwest_border INTEGER,
+    facts_narrative TEXT,
 
     -- Narrative
     case_summary TEXT,
@@ -101,7 +123,99 @@ CREATE TABLE IF NOT EXISTS crime_gun_events (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Index for common queries
+-- Indexes for common queries
+CREATE INDEX IF NOT EXISTS idx_jurisdiction_state ON crime_gun_events(jurisdiction_state);
+CREATE INDEX IF NOT EXISTS idx_crime_location_state ON crime_gun_events(crime_location_state);
+CREATE INDEX IF NOT EXISTS idx_dealer_name ON crime_gun_events(dealer_name);
+CREATE INDEX IF NOT EXISTS idx_manufacturer_name ON crime_gun_events(manufacturer_name);
+CREATE INDEX IF NOT EXISTS idx_time_to_crime ON crime_gun_events(time_to_crime);
+CREATE INDEX IF NOT EXISTS idx_court ON crime_gun_events(court);
+CREATE INDEX IF NOT EXISTS idx_source_dataset ON crime_gun_events(source_dataset);
+CREATE INDEX IF NOT EXISTS idx_trafficking_destination ON crime_gun_events(trafficking_destination);
+"""
+
+# SQLite schema (uses AUTOINCREMENT)
+SCHEMA_SQLITE = """
+CREATE TABLE IF NOT EXISTS crime_gun_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+    -- Source traceability
+    source_dataset TEXT,
+    source_sheet TEXT,
+    source_row INTEGER,
+
+    -- Existing jurisdiction fields (from ETL)
+    jurisdiction_state TEXT,
+    jurisdiction_city TEXT,
+    jurisdiction_method TEXT,
+    jurisdiction_confidence TEXT,
+
+    -- Crime location fields (populated by classifier agents)
+    crime_location_state TEXT,
+    crime_location_city TEXT,
+    crime_location_zip TEXT,
+    crime_location_court TEXT,
+    crime_location_pd TEXT,
+    crime_location_reasoning TEXT,
+
+    -- Dealer (Tier 3)
+    dealer_name TEXT,
+    dealer_city TEXT,
+    dealer_state TEXT,
+    dealer_ffl TEXT,
+
+    -- Manufacturer (Tier 1)
+    manufacturer_name TEXT,
+
+    -- Firearm details
+    firearm_serial TEXT,
+    firearm_caliber TEXT,
+
+    -- Case info
+    defendant_name TEXT,
+    case_number TEXT,
+    case_status TEXT,
+
+    -- Purchase info
+    purchase_date TEXT,
+    purchaser_name TEXT,
+
+    -- Timing (raw)
+    time_to_recovery TEXT,
+    ttr_category TEXT,
+
+    -- Timing (computed)
+    sale_date TEXT,
+    crime_date TEXT,
+    time_to_crime INTEGER,
+    court TEXT,
+    case_number_clean TEXT,
+
+    -- Risk indicators
+    has_nibin INTEGER DEFAULT 0,
+    has_trafficking_indicia INTEGER DEFAULT 0,
+    is_interstate INTEGER DEFAULT 0,
+
+    -- Crime Gun DB specific fields
+    in_dl2_program INTEGER,
+    is_top_trace_ffl INTEGER,
+    is_revoked INTEGER,
+    is_charged_or_sued INTEGER,
+    case_name TEXT,
+    trafficking_origin TEXT,
+    trafficking_destination TEXT,
+    is_southwest_border INTEGER,
+    facts_narrative TEXT,
+
+    -- Narrative
+    case_summary TEXT,
+
+    -- Metadata
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Indexes for common queries
 CREATE INDEX IF NOT EXISTS idx_jurisdiction_state ON crime_gun_events(jurisdiction_state);
 CREATE INDEX IF NOT EXISTS idx_crime_location_state ON crime_gun_events(crime_location_state);
 CREATE INDEX IF NOT EXISTS idx_dealer_name ON crime_gun_events(dealer_name);
@@ -113,17 +227,7 @@ CREATE INDEX IF NOT EXISTS idx_trafficking_destination ON crime_gun_events(traff
 """
 
 
-# Migration for adding computed columns to existing database
-MIGRATION_COMPUTED_COLUMNS = """
--- Add computed timing columns if they don't exist
-ALTER TABLE crime_gun_events ADD COLUMN sale_date TEXT;
-ALTER TABLE crime_gun_events ADD COLUMN crime_date TEXT;
-ALTER TABLE crime_gun_events ADD COLUMN time_to_crime INTEGER;
-ALTER TABLE crime_gun_events ADD COLUMN court TEXT;
-ALTER TABLE crime_gun_events ADD COLUMN case_number_clean TEXT;
-"""
-
-# Crime Gun DB specific columns
+# Crime Gun DB specific columns for migrations
 CRIME_GUN_DB_COLUMNS = [
     ('in_dl2_program', 'INTEGER'),
     ('is_top_trace_ffl', 'INTEGER'),
@@ -137,32 +241,103 @@ CRIME_GUN_DB_COLUMNS = [
 ]
 
 
-def init_db(db_path: Optional[Path] = None) -> sqlite3.Connection:
-    """Initialize the SQLite database with schema."""
-    if db_path is None:
-        db_path = get_db_path()
+def _get_postgres_connection():
+    """Get a PostgreSQL connection using DATABASE_URL."""
+    import psycopg2
 
-    db_path.parent.mkdir(parents=True, exist_ok=True)
+    url = get_database_url()
+    if not url:
+        raise ValueError("DATABASE_URL not set")
 
-    cprint(f"Initializing database at {db_path}", "cyan")
-
-    conn = sqlite3.connect(str(db_path))
-    conn.executescript(SCHEMA)
-    conn.commit()
-
-    cprint("Database schema created successfully", "green")
+    cprint(f"Connecting to PostgreSQL...", "cyan")
+    conn = psycopg2.connect(url)
     return conn
 
 
-def get_connection(db_path: Optional[Path] = None) -> sqlite3.Connection:
-    """Get a connection to the database."""
+def _get_sqlite_connection(db_path: Optional[Path] = None) -> sqlite3.Connection:
+    """Get a SQLite connection."""
     if db_path is None:
         db_path = get_db_path()
 
-    if not db_path.exists():
-        return init_db(db_path)
-
     return sqlite3.connect(str(db_path))
+
+
+@contextmanager
+def get_connection(db_path: Optional[Path] = None):
+    """
+    Get a database connection (PostgreSQL or SQLite).
+
+    Uses DATABASE_URL if set, otherwise falls back to SQLite.
+    Returns a context manager that handles connection cleanup.
+
+    Usage:
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM crime_gun_events")
+    """
+    if is_postgres():
+        conn = _get_postgres_connection()
+        try:
+            yield conn
+        finally:
+            conn.close()
+    else:
+        if db_path is None:
+            db_path = get_db_path()
+        conn = sqlite3.connect(str(db_path))
+        try:
+            yield conn
+        finally:
+            conn.close()
+
+
+def get_placeholder() -> str:
+    """Get the parameter placeholder for the current database."""
+    return "%s" if is_postgres() else "?"
+
+
+def init_db(db_path: Optional[Path] = None) -> Connection:
+    """Initialize the database with schema."""
+    if is_postgres():
+        cprint("Initializing PostgreSQL database...", "cyan")
+        conn = _get_postgres_connection()
+        cursor = conn.cursor()
+
+        # Execute schema (PostgreSQL version)
+        cursor.execute(SCHEMA_POSTGRES)
+        conn.commit()
+
+        cprint("PostgreSQL database schema created successfully", "green")
+        return conn
+    else:
+        if db_path is None:
+            db_path = get_db_path()
+
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        cprint(f"Initializing SQLite database at {db_path}", "cyan")
+
+        conn = sqlite3.connect(str(db_path))
+        conn.executescript(SCHEMA_SQLITE)
+        conn.commit()
+
+        cprint("SQLite database schema created successfully", "green")
+        return conn
+
+
+def _get_existing_columns(conn: Connection, table_name: str = "crime_gun_events") -> set:
+    """Get set of existing column names in a table."""
+    if is_postgres():
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_name = %s
+        """, (table_name,))
+        return {row[0] for row in cursor.fetchall()}
+    else:
+        cursor = conn.cursor()
+        cursor.execute(f"PRAGMA table_info({table_name})")
+        return {row[1] for row in cursor.fetchall()}
 
 
 def migrate_add_computed_columns(db_path: Optional[Path] = None) -> bool:
@@ -172,19 +347,16 @@ def migrate_add_computed_columns(db_path: Optional[Path] = None) -> bool:
     Returns:
         True if migration was needed/performed, False if columns already exist
     """
-    if db_path is None:
-        db_path = get_db_path()
+    if is_postgres():
+        conn = _get_postgres_connection()
+    else:
+        if db_path is None:
+            db_path = get_db_path()
+        if not db_path.exists():
+            return False
+        conn = sqlite3.connect(str(db_path))
 
-    if not db_path.exists():
-        return False
-
-    conn = sqlite3.connect(str(db_path))
-    cursor = conn.cursor()
-
-    # Check if columns already exist
-    cursor.execute("PRAGMA table_info(crime_gun_events)")
-    columns = {row[1] for row in cursor.fetchall()}
-
+    columns = _get_existing_columns(conn, "crime_gun_events")
     new_columns = ['sale_date', 'crime_date', 'time_to_crime', 'court', 'case_number_clean']
     missing = [col for col in new_columns if col not in columns]
 
@@ -194,23 +366,19 @@ def migrate_add_computed_columns(db_path: Optional[Path] = None) -> bool:
         return False
 
     cprint(f"Adding missing columns: {missing}", "yellow")
+    cursor = conn.cursor()
 
     for col in missing:
-        if col == 'time_to_crime':
-            col_type = 'INTEGER'
-        else:
-            col_type = 'TEXT'
-
+        col_type = 'INTEGER' if col == 'time_to_crime' else 'TEXT'
         try:
             cursor.execute(f"ALTER TABLE crime_gun_events ADD COLUMN {col} {col_type}")
             cprint(f"  Added column: {col}", "green")
-        except sqlite3.OperationalError as e:
-            if "duplicate column name" not in str(e).lower():
+        except Exception as e:
+            if "duplicate column" not in str(e).lower() and "already exists" not in str(e).lower():
                 cprint(f"  Warning: Could not add column {col}: {e}", "yellow")
 
     conn.commit()
     conn.close()
-
     cprint("Migration complete", "green")
     return True
 
@@ -222,19 +390,16 @@ def migrate_add_crime_gun_db_columns(db_path: Optional[Path] = None) -> bool:
     Returns:
         True if migration was needed/performed, False if columns already exist
     """
-    if db_path is None:
-        db_path = get_db_path()
+    if is_postgres():
+        conn = _get_postgres_connection()
+    else:
+        if db_path is None:
+            db_path = get_db_path()
+        if not db_path.exists():
+            return False
+        conn = sqlite3.connect(str(db_path))
 
-    if not db_path.exists():
-        return False
-
-    conn = sqlite3.connect(str(db_path))
-    cursor = conn.cursor()
-
-    # Check existing columns
-    cursor.execute("PRAGMA table_info(crime_gun_events)")
-    existing_columns = {row[1] for row in cursor.fetchall()}
-
+    existing_columns = _get_existing_columns(conn, "crime_gun_events")
     missing = [(col, col_type) for col, col_type in CRIME_GUN_DB_COLUMNS
                if col not in existing_columns]
 
@@ -244,18 +409,18 @@ def migrate_add_crime_gun_db_columns(db_path: Optional[Path] = None) -> bool:
         return False
 
     cprint(f"Adding Crime Gun DB columns: {[c[0] for c in missing]}", "yellow")
+    cursor = conn.cursor()
 
     for col, col_type in missing:
         try:
             cursor.execute(f"ALTER TABLE crime_gun_events ADD COLUMN {col} {col_type}")
             cprint(f"  Added column: {col}", "green")
-        except sqlite3.OperationalError as e:
-            if "duplicate column name" not in str(e).lower():
+        except Exception as e:
+            if "duplicate column" not in str(e).lower() and "already exists" not in str(e).lower():
                 cprint(f"  Warning: Could not add column {col}: {e}", "yellow")
 
     conn.commit()
     conn.close()
-
     cprint("Crime Gun DB migration complete", "green")
     return True
 
@@ -264,57 +429,32 @@ def load_df_to_db(df: pd.DataFrame, table_name: str = "crime_gun_events",
                   db_path: Optional[Path] = None,
                   if_exists: Literal["fail", "replace", "append"] = "replace") -> int:
     """
-    Load a DataFrame into the SQLite database.
+    Load a DataFrame into the database.
 
     Args:
         df: DataFrame to load
         table_name: Target table name
-        db_path: Optional database path
+        db_path: Optional database path (SQLite only)
         if_exists: 'replace', 'append', or 'fail'
 
     Returns:
         Number of rows inserted
     """
-    if db_path is None:
-        db_path = get_db_path()
-
-    # Ensure database exists
-    if not db_path.exists():
-        init_db(db_path)
-
-    conn = sqlite3.connect(str(db_path))
-
-    # Add new columns if they don't exist in the DataFrame
+    # Add missing columns to DataFrame
     new_columns = [
-        'crime_location_state',
-        'crime_location_city',
-        'crime_location_zip',
-        'crime_location_court',
-        'crime_location_pd',
-        'crime_location_reasoning',
-        # Computed timing columns
-        'sale_date',
-        'crime_date',
-        'time_to_crime',
-        'court',
-        'case_number_clean',
-        # Crime Gun DB specific columns
-        'in_dl2_program',
-        'is_top_trace_ffl',
-        'is_revoked',
-        'is_charged_or_sued',
-        'case_name',
-        'trafficking_origin',
-        'trafficking_destination',
-        'is_southwest_border',
-        'facts_narrative',
+        'crime_location_state', 'crime_location_city', 'crime_location_zip',
+        'crime_location_court', 'crime_location_pd', 'crime_location_reasoning',
+        'sale_date', 'crime_date', 'time_to_crime', 'court', 'case_number_clean',
+        'in_dl2_program', 'is_top_trace_ffl', 'is_revoked', 'is_charged_or_sued',
+        'case_name', 'trafficking_origin', 'trafficking_destination',
+        'is_southwest_border', 'facts_narrative',
     ]
 
     for col in new_columns:
         if col not in df.columns:
             df[col] = None
 
-    # Convert boolean columns to integers for SQLite
+    # Convert boolean columns to integers
     bool_cols = [
         'has_nibin', 'has_trafficking_indicia', 'is_interstate',
         'in_dl2_program', 'is_top_trace_ffl', 'is_revoked',
@@ -322,27 +462,67 @@ def load_df_to_db(df: pd.DataFrame, table_name: str = "crime_gun_events",
     ]
     for col in bool_cols:
         if col in df.columns:
-            # Use pd.Int64Dtype() to handle nullable integers
             df[col] = df[col].apply(lambda x: int(x) if pd.notna(x) and x is not None else None)
 
     cprint(f"Loading {len(df)} records to {table_name}...", "yellow")
 
-    df.to_sql(table_name, conn, if_exists=if_exists, index=False)
+    if is_postgres():
+        from sqlalchemy import create_engine
 
-    conn.commit()
-    conn.close()
+        url = get_database_url()
+        if url is None:
+            raise ValueError("DATABASE_URL not set")
+        # SQLAlchemy needs postgresql:// not postgres://
+        if url.startswith("postgres://"):
+            url = url.replace("postgres://", "postgresql://", 1)
+
+        engine = create_engine(url)
+        df.to_sql(table_name, engine, if_exists=if_exists, index=False)
+        engine.dispose()
+    else:
+        if db_path is None:
+            db_path = get_db_path()
+
+        if not db_path.exists():
+            init_db(db_path)
+
+        conn = sqlite3.connect(str(db_path))
+        df.to_sql(table_name, conn, if_exists=if_exists, index=False)
+        conn.commit()
+        conn.close()
 
     cprint(f"Loaded {len(df)} records to database", "green")
     return len(df)
 
 
-def query_db(sql: str, db_path: Optional[Path] = None) -> pd.DataFrame:
+def query_db(sql: str, db_path: Optional[Path] = None, params: Optional[tuple] = None) -> pd.DataFrame:
     """Execute a SQL query and return results as DataFrame."""
-    if db_path is None:
-        db_path = get_db_path()
+    if is_postgres():
+        from sqlalchemy import create_engine
+        from sqlalchemy import text
 
-    with sqlite3.connect(str(db_path)) as conn:
-        return pd.read_sql_query(sql, conn)
+        url = get_database_url()
+        if url is None:
+            raise ValueError("DATABASE_URL not set")
+        # SQLAlchemy needs postgresql:// not postgres://
+        if url.startswith("postgres://"):
+            url = url.replace("postgres://", "postgresql://", 1)
+
+        engine = create_engine(url)
+        if params:
+            result = pd.read_sql_query(text(sql), engine, params=dict(enumerate(params)))
+        else:
+            result = pd.read_sql_query(sql, engine)
+        engine.dispose()
+        return result
+    else:
+        if db_path is None:
+            db_path = get_db_path()
+
+        with sqlite3.connect(str(db_path)) as conn:
+            if params:
+                return pd.read_sql_query(sql, conn, params=list(params))
+            return pd.read_sql_query(sql, conn)
 
 
 def get_all_events(db_path: Optional[Path] = None) -> pd.DataFrame:
@@ -352,24 +532,15 @@ def get_all_events(db_path: Optional[Path] = None) -> pd.DataFrame:
 
 def get_events_by_state(state: str, db_path: Optional[Path] = None) -> pd.DataFrame:
     """Get crime gun events for a specific jurisdiction state."""
-    if db_path is None:
-        db_path = get_db_path()
-    with sqlite3.connect(str(db_path)) as conn:
-        return pd.read_sql_query(
-            "SELECT * FROM crime_gun_events WHERE jurisdiction_state = ?",
-            conn,
-            params=[state]
-        )
+    placeholder = get_placeholder()
+    sql = f"SELECT * FROM crime_gun_events WHERE jurisdiction_state = {placeholder}"
+    return query_db(sql, db_path, params=(state,))
 
 
 def get_summary_stats(db_path: Optional[Path] = None) -> dict:
     """Get summary statistics from the database."""
-    if db_path is None:
-        db_path = get_db_path()
-
-    with sqlite3.connect(str(db_path)) as conn:
+    with get_connection(db_path) as conn:
         cursor = conn.cursor()
-
         stats = {}
 
         # Total records
@@ -386,9 +557,10 @@ def get_summary_stats(db_path: Optional[Path] = None) -> dict:
 
         # Interstate count
         cursor.execute("SELECT SUM(is_interstate) FROM crime_gun_events")
-        stats['interstate_count'] = cursor.fetchone()[0] or 0
+        result = cursor.fetchone()[0]
+        stats['interstate_count'] = int(result) if result else 0
 
-        # Crime location coverage (new columns populated)
+        # Crime location coverage
         cursor.execute("SELECT COUNT(*) FROM crime_gun_events WHERE crime_location_state IS NOT NULL")
         stats['crime_location_populated'] = cursor.fetchone()[0]
 
@@ -403,47 +575,115 @@ def update_crime_location(record_id: int, state: str, city: str, zip_code: str,
     Used by classifier agents to populate location data.
 
     Args:
-        record_id: SQLite rowid of the record to update
+        record_id: Database row ID (rowid for SQLite, id for PostgreSQL)
     """
-    if db_path is None:
-        db_path = get_db_path()
+    placeholder = get_placeholder()
 
-    with sqlite3.connect(str(db_path)) as conn:
+    # Use 'id' for PostgreSQL, 'rowid' for SQLite
+    id_column = "id" if is_postgres() else "rowid"
+
+    with get_connection(db_path) as conn:
         cursor = conn.cursor()
 
-        cursor.execute("""
+        sql = f"""
             UPDATE crime_gun_events
-            SET crime_location_state = ?,
-                crime_location_city = ?,
-                crime_location_zip = ?,
-                crime_location_court = ?,
-                crime_location_pd = ?,
-                crime_location_reasoning = ?
-            WHERE rowid = ?
-        """, (state, city, zip_code, court, pd, reasoning, record_id))
+            SET crime_location_state = {placeholder},
+                crime_location_city = {placeholder},
+                crime_location_zip = {placeholder},
+                crime_location_court = {placeholder},
+                crime_location_pd = {placeholder},
+                crime_location_reasoning = {placeholder}
+            WHERE {id_column} = {placeholder}
+        """
 
+        cursor.execute(sql, (state, city, zip_code, court, pd, reasoning, record_id))
         conn.commit()
         return cursor.rowcount > 0
 
 
+def delete_by_source_dataset(datasets: list[str], db_path: Optional[Path] = None) -> int:
+    """
+    Delete records by source_dataset values.
+
+    Args:
+        datasets: List of source_dataset values to delete
+        db_path: Optional database path (SQLite only)
+
+    Returns:
+        Number of rows deleted
+    """
+    if not datasets:
+        return 0
+
+    placeholder = get_placeholder()
+    placeholders = ", ".join([placeholder] * len(datasets))
+    sql = f"DELETE FROM crime_gun_events WHERE source_dataset IN ({placeholders})"
+
+    with get_connection(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute(sql, tuple(datasets))
+        deleted = cursor.rowcount
+        conn.commit()
+        return deleted
+
+
+def count_by_source_dataset(datasets: list[str], db_path: Optional[Path] = None) -> int:
+    """
+    Count records by source_dataset values.
+
+    Args:
+        datasets: List of source_dataset values to count
+        db_path: Optional database path (SQLite only)
+
+    Returns:
+        Number of matching rows
+    """
+    if not datasets:
+        return 0
+
+    placeholder = get_placeholder()
+    placeholders = ", ".join([placeholder] * len(datasets))
+    sql = f"SELECT COUNT(*) FROM crime_gun_events WHERE source_dataset IN ({placeholders})"
+
+    with get_connection(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute(sql, tuple(datasets))
+        return cursor.fetchone()[0]
+
+
 if __name__ == "__main__":
-    # Test database initialization
     cprint("=" * 60, "cyan")
-    cprint("TESTING SQLITE DATABASE MODULE", "cyan", attrs=["bold"])
+    cprint("TESTING DATABASE MODULE", "cyan", attrs=["bold"])
     cprint("=" * 60, "cyan")
+
+    if is_postgres():
+        cprint("Using PostgreSQL (DATABASE_URL is set)", "green")
+    else:
+        cprint("Using SQLite (local development)", "yellow")
 
     conn = init_db()
 
     # Check if table exists
-    cursor = conn.cursor()
-    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='crime_gun_events'")
-    result = cursor.fetchone()
-
-    if result:
-        cprint("✅ Table 'crime_gun_events' created successfully", "green")
+    if is_postgres():
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables
+                WHERE table_name = 'crime_gun_events'
+            )
+        """)
+        exists = cursor.fetchone()[0]
     else:
-        cprint("❌ Table creation failed", "red")
+        cursor = conn.cursor()
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='crime_gun_events'")
+        exists = cursor.fetchone() is not None
+
+    if exists:
+        cprint("Table 'crime_gun_events' created successfully", "green")
+    else:
+        cprint("Table creation failed", "red")
 
     conn.close()
 
-    cprint(f"\nDatabase location: {get_db_path()}", "yellow")
+    if not is_postgres():
+        cprint(f"\nDatabase location: {get_db_path()}", "yellow")

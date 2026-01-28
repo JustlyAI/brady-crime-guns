@@ -21,7 +21,7 @@ import sqlite3
 from typing import Optional
 from termcolor import cprint
 
-from brady.etl.database import get_db_path
+from brady.etl.database import get_connection, get_db_path, get_placeholder, is_postgres
 from brady.etl.court_lookup import lookup_court
 
 
@@ -217,113 +217,120 @@ def process_batch(batch_size: int = 50, dry_run: bool = False, verbose: bool = F
     Returns:
         Number of records processed
     """
-    db_path = get_db_path()
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
+    placeholder = get_placeholder()
+    # Use 'id' for PostgreSQL, 'rowid' for SQLite
+    id_column = "id" if is_postgres() else "rowid"
 
-    # Get unclassified records
-    cprint(f"Querying unclassified records (batch_size={batch_size})...", "yellow")
+    with get_connection() as conn:
+        # Set up row factory for dict-like access
+        if is_postgres():
+            import psycopg2.extras
+            cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        else:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
 
-    cursor = conn.execute("""
-        SELECT rowid, source_row, source_dataset, jurisdiction_state, jurisdiction_city,
-               case_number, case_summary
-        FROM crime_gun_events
-        WHERE crime_location_state IS NULL
-        LIMIT ?
-    """, (batch_size,))
+        # Get unclassified records
+        cprint(f"Querying unclassified records (batch_size={batch_size})...", "yellow")
 
-    records = cursor.fetchall()
-    cprint(f"Found {len(records)} unclassified records", "cyan")
+        sql = f"""
+            SELECT {id_column} as record_id, source_row, source_dataset, jurisdiction_state, jurisdiction_city,
+                   case_number, case_summary
+            FROM crime_gun_events
+            WHERE crime_location_state IS NULL
+            LIMIT {placeholder}
+        """
+        cursor.execute(sql, (batch_size,))
 
-    if not records:
-        cprint("No unclassified records found!", "green")
-        conn.close()
-        return 0
+        records = cursor.fetchall()
+        cprint(f"Found {len(records)} unclassified records", "cyan")
 
-    processed = 0
-    for record in records:
-        record_dict = dict(record)
-        rowid = record_dict['rowid']
+        if not records:
+            cprint("No unclassified records found!", "green")
+            return 0
 
-        # Classify the record
-        result = classify_record(record_dict)
+        processed = 0
+        for record in records:
+            record_dict = dict(record)
+            record_id = record_dict['record_id']
 
-        if verbose:
-            cprint(f"\nRow {record_dict['source_row']} (rowid={rowid}):", "white")
-            cprint(f"  State: {result['state']}", "green")
-            cprint(f"  City:  {result['city']}", "green")
-            cprint(f"  ZIP:   {result['zip_code']}", "green")
-            cprint(f"  Court: {result['court']}", "green")
-            cprint(f"  PD:    {result['pd']}", "green")
-            if record_dict.get('case_summary'):
-                summary_preview = record_dict['case_summary'][:100].replace('\n', ' ')
-                cprint(f"  Narrative: {summary_preview}...", "white", attrs=["dark"])
+            # Classify the record
+            result = classify_record(record_dict)
+
+            if verbose:
+                cprint(f"\nRow {record_dict['source_row']} (id={record_id}):", "white")
+                cprint(f"  State: {result['state']}", "green")
+                cprint(f"  City:  {result['city']}", "green")
+                cprint(f"  ZIP:   {result['zip_code']}", "green")
+                cprint(f"  Court: {result['court']}", "green")
+                cprint(f"  PD:    {result['pd']}", "green")
+                if record_dict.get('case_summary'):
+                    summary_preview = record_dict['case_summary'][:100].replace('\n', ' ')
+                    cprint(f"  Narrative: {summary_preview}...", "white", attrs=["dark"])
+
+            if not dry_run:
+                update_sql = f"""
+                    UPDATE crime_gun_events
+                    SET crime_location_state = {placeholder},
+                        crime_location_city = {placeholder},
+                        crime_location_zip = {placeholder},
+                        crime_location_court = {placeholder},
+                        crime_location_pd = {placeholder},
+                        crime_location_reasoning = {placeholder}
+                    WHERE {id_column} = {placeholder}
+                """
+                cursor.execute(update_sql, (
+                    result['state'],
+                    result['city'],
+                    result['zip_code'],
+                    result['court'],
+                    result['pd'],
+                    result['reasoning'],
+                    record_id
+                ))
+
+            processed += 1
+
+            # Progress indicator every 100 records
+            if processed % 100 == 0:
+                cprint(f"  Processed {processed}/{len(records)}...", "yellow")
 
         if not dry_run:
-            conn.execute("""
-                UPDATE crime_gun_events
-                SET crime_location_state = ?,
-                    crime_location_city = ?,
-                    crime_location_zip = ?,
-                    crime_location_court = ?,
-                    crime_location_pd = ?,
-                    crime_location_reasoning = ?
-                WHERE rowid = ?
-            """, (
-                result['state'],
-                result['city'],
-                result['zip_code'],
-                result['court'],
-                result['pd'],
-                result['reasoning'],
-                rowid
-            ))
+            conn.commit()
+            cprint(f"\nCommitted {processed} updates to database", "green")
+        else:
+            cprint(f"\nDRY RUN: Would have updated {processed} records", "yellow")
 
-        processed += 1
-
-        # Progress indicator every 100 records
-        if processed % 100 == 0:
-            cprint(f"  Processed {processed}/{len(records)}...", "yellow")
-
-    if not dry_run:
-        conn.commit()
-        cprint(f"\nCommitted {processed} updates to database", "green")
-    else:
-        cprint(f"\nDRY RUN: Would have updated {processed} records", "yellow")
-
-    conn.close()
-    return processed
+        return processed
 
 
 def get_classification_stats() -> dict:
     """Get current classification statistics."""
-    db_path = get_db_path()
-    conn = sqlite3.connect(db_path)
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        stats = {}
 
-    stats = {}
+        # Total and classified counts
+        cursor.execute("SELECT COUNT(*) FROM crime_gun_events")
+        stats['total'] = cursor.fetchone()[0]
 
-    # Total and classified counts
-    cursor = conn.execute("SELECT COUNT(*) FROM crime_gun_events")
-    stats['total'] = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM crime_gun_events WHERE crime_location_state IS NOT NULL")
+        stats['classified'] = cursor.fetchone()[0]
 
-    cursor = conn.execute("SELECT COUNT(*) FROM crime_gun_events WHERE crime_location_state IS NOT NULL")
-    stats['classified'] = cursor.fetchone()[0]
+        stats['remaining'] = stats['total'] - stats['classified']
+        stats['progress_pct'] = (stats['classified'] / stats['total'] * 100) if stats['total'] > 0 else 0
 
-    stats['remaining'] = stats['total'] - stats['classified']
-    stats['progress_pct'] = (stats['classified'] / stats['total'] * 100) if stats['total'] > 0 else 0
+        # ZIP code distribution
+        cursor.execute("""
+            SELECT crime_location_zip, COUNT(*) as count
+            FROM crime_gun_events
+            WHERE crime_location_zip IS NOT NULL
+            GROUP BY crime_location_zip
+            ORDER BY count DESC
+        """)
+        stats['zip_distribution'] = {row[0]: row[1] for row in cursor.fetchall()}
 
-    # ZIP code distribution
-    cursor = conn.execute("""
-        SELECT crime_location_zip, COUNT(*) as count
-        FROM crime_gun_events
-        WHERE crime_location_zip IS NOT NULL
-        GROUP BY crime_location_zip
-        ORDER BY count DESC
-    """)
-    stats['zip_distribution'] = {row[0]: row[1] for row in cursor.fetchall()}
-
-    conn.close()
-    return stats
+        return stats
 
 
 def main():
