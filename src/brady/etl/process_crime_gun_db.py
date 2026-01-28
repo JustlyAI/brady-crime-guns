@@ -62,6 +62,21 @@ COURT_STATE_MAP = {
 }
 
 
+def get_source_dataset(sheet_name: str) -> str:
+    """Map Excel sheet name to source_dataset identifier.
+
+    - Philadelphia Trace (PA-specific trace data) -> PA_TRACE
+    - CG court doc FFLs (multi-state federal cases) -> CG_COURT_DOC
+    - Rochester Trace (if re-enabled) -> PA_TRACE
+    """
+    mapping = {
+        "Philadelphia Trace": "PA_TRACE",
+        "CG court doc FFLs": "CG_COURT_DOC",
+        "Rochester Trace": "PA_TRACE",  # If re-enabled later
+    }
+    return mapping.get(sheet_name, "UNKNOWN_CRIME_GUN_DB")
+
+
 def parse_recovery_location(text) -> tuple[str, str] | None:
     """Extract first (city, state) from recovery location text."""
     if not text or pd.isna(text):
@@ -209,7 +224,7 @@ def transform_row(row: pd.Series, sheet_name: str, source_row: int) -> dict | No
     facts = row.get("Facts")
 
     return {
-        "source_dataset": "CRIME_GUN_DB",
+        "source_dataset": get_source_dataset(sheet_name),
         "source_sheet": sheet_name,
         "source_row": source_row,
         "jurisdiction_state": state,
@@ -288,18 +303,18 @@ def main():
     result_df = pd.DataFrame(all_records)
     cprint(f"\nTransformed {len(result_df)} records total", "green")
 
-    # Delete existing CRIME_GUN_DB records and insert new
+    # Delete existing Crime Gun DB records (old and new dataset names) and insert new
     cprint(f"\nSaving to database: {db_path}", "yellow")
     with sqlite3.connect(str(db_path)) as conn:
-        # Delete existing
+        # Delete existing - includes legacy 'CRIME_GUN_DB' and new split datasets
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT COUNT(*) FROM crime_gun_events WHERE source_dataset = 'CRIME_GUN_DB'"
+            "SELECT COUNT(*) FROM crime_gun_events WHERE source_dataset IN ('CRIME_GUN_DB', 'PA_TRACE', 'CG_COURT_DOC')"
         )
         existing_count = cursor.fetchone()[0]
         if existing_count > 0:
-            cprint(f"  Deleting {existing_count} existing CRIME_GUN_DB records...", "yellow")
-        cursor.execute("DELETE FROM crime_gun_events WHERE source_dataset = 'CRIME_GUN_DB'")
+            cprint(f"  Deleting {existing_count} existing Crime Gun DB records...", "yellow")
+        cursor.execute("DELETE FROM crime_gun_events WHERE source_dataset IN ('CRIME_GUN_DB', 'PA_TRACE', 'CG_COURT_DOC')")
 
         # Insert new records
         result_df.to_sql("crime_gun_events", conn, if_exists="append", index=False)
@@ -319,6 +334,12 @@ def main():
     cprint("\n  Records by sheet:", "white")
     for sheet, count in sheet_stats.items():
         cprint(f"    {sheet}: {count}", "white")
+
+    # Dataset breakdown
+    cprint("\n  Records by source_dataset:", "white")
+    dataset_counts = result_df["source_dataset"].value_counts()
+    for dataset, count in dataset_counts.items():
+        cprint(f"    {dataset}: {count}", "white")
 
     # Jurisdiction coverage
     with_jurisdiction = result_df["jurisdiction_state"].notna().sum()

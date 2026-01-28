@@ -132,16 +132,19 @@ def main():
     st.sidebar.header("🎯 Filters")
 
     # State filter
-    available_states = sorted(events_df['jurisdiction_state'].dropna().unique())
+    available_states = ["ALL"] + sorted(events_df['jurisdiction_state'].dropna().unique().tolist())
     selected_state = st.sidebar.selectbox(
         "Select State (Crime Location)",
         options=available_states,
-        index=available_states.index('DE') if 'DE' in available_states else 0,
+        index=0,  # Default to ALL
         help="Filter by where the crime occurred"
     )
 
-    # Filter data
-    filtered_df = events_df[events_df['jurisdiction_state'] == selected_state].copy()
+    # Apply state filter only if not ALL
+    if selected_state == "ALL":
+        filtered_df = events_df.copy()
+    else:
+        filtered_df = events_df[events_df['jurisdiction_state'] == selected_state].copy()
 
     # Data source filter
     data_sources = ['All'] + sorted(events_df['source_dataset'].dropna().unique().tolist())
@@ -400,7 +403,8 @@ def main():
         available_cols = filtered_df.columns.tolist()
         default_cols = ['source_dataset', 'source_row', 'jurisdiction_state',
                        'dealer_name', 'dealer_state', 'manufacturer_name',
-                       'case_number_clean', 'court', 'sale_date', 'crime_date', 'time_to_crime']
+                       'case_number_clean', 'court', 'sale_date', 'crime_date', 'time_to_crime',
+                       'crime_location_state', 'crime_location_city', 'crime_location_zip']
         default_cols = [c for c in default_cols if c in available_cols]
 
         selected_cols = st.multiselect("Select columns", available_cols, default=default_cols)

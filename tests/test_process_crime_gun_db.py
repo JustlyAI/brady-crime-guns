@@ -10,6 +10,7 @@ import pytest
 
 from brady.etl.process_crime_gun_db import (
     convert_boolean,
+    get_source_dataset,
     parse_court_state,
     parse_recovery_location,
     parse_time_to_crime,
@@ -200,6 +201,26 @@ class TestParseTimeToCrime:
 
     def test_numeric_extraction(self):
         assert parse_time_to_crime("about 100 days or so") == 100
+
+
+class TestGetSourceDataset:
+    """Tests for get_source_dataset function."""
+
+    def test_philadelphia_trace_maps_to_pa_trace(self):
+        """Philadelphia Trace sheet should map to PA_TRACE."""
+        assert get_source_dataset("Philadelphia Trace") == "PA_TRACE"
+
+    def test_cg_court_doc_maps_to_cg_court_doc(self):
+        """CG court doc FFLs sheet should map to CG_COURT_DOC."""
+        assert get_source_dataset("CG court doc FFLs") == "CG_COURT_DOC"
+
+    def test_rochester_trace_maps_to_pa_trace(self):
+        """Rochester Trace sheet should map to PA_TRACE (if re-enabled)."""
+        assert get_source_dataset("Rochester Trace") == "PA_TRACE"
+
+    def test_unknown_sheet_returns_fallback(self):
+        """Unknown sheets should get fallback dataset name."""
+        assert get_source_dataset("Some New Sheet") == "UNKNOWN_CRIME_GUN_DB"
 
 
 if __name__ == "__main__":
