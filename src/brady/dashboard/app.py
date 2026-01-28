@@ -10,8 +10,11 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+import sqlite3
 from pathlib import Path
 from typing import Optional
+
+from brady.utils import get_project_root
 
 # Page config
 st.set_page_config(
@@ -45,30 +48,28 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-def get_project_root() -> Path:
-    """Get project root directory (works from any location)"""
-    current = Path(__file__).resolve()
-    # Navigate up from src/brady/dashboard/app.py to project root
-    for parent in current.parents:
-        if (parent / "pyproject.toml").exists() or (parent / "src").exists():
-            return parent
-    return current.parent.parent.parent.parent
-
 
 @st.cache_data
 def load_data() -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Load crime gun events and DL2 dealer data"""
+    """Load crime gun events and DL2 dealer data from SQLite (with CSV fallback)"""
     project_root = get_project_root()
-    data_dir = project_root / "data" / "processed"
+    data_dir = project_root / "data"
 
-    events_path = data_dir / "crime_gun_events.csv"
-    dl2_path = data_dir / "dl2_dealers.csv"
+    db_path = data_dir / "brady.db"
+    events_path = data_dir / "processed" / "crime_gun_events.csv"
+    dl2_path = data_dir / "processed" / "dl2_dealers.csv"
 
-    if not events_path.exists():
-        st.error(f"Data not found at {events_path}! Run ETL pipeline first.")
+    # Try SQLite first, fall back to CSV
+    if db_path.exists():
+        conn = sqlite3.connect(str(db_path))
+        events_df = pd.read_sql_query("SELECT * FROM crime_gun_events", conn)
+        conn.close()
+    elif events_path.exists():
+        events_df = pd.read_csv(events_path, encoding="utf-8")
+    else:
+        st.error(f"Data not found! Run ETL pipeline first: uv run python -m brady.etl.process_gunstat")
         st.stop()
 
-    events_df = pd.read_csv(events_path, encoding="utf-8")
     dl2_df = pd.read_csv(dl2_path, encoding="utf-8") if dl2_path.exists() else pd.DataFrame()
 
     return events_df, dl2_df
@@ -179,6 +180,70 @@ def main():
         # Calculate avg if we had TTC data
         pending_count = filtered_df[filtered_df['case_status'] == 'Pending'].shape[0] if 'case_status' in filtered_df.columns else 0
         st.metric("Pending Cases", f"{pending_count:,}")
+
+    # Timeline Analysis Section (new computed columns)
+    if 'time_to_crime' in filtered_df.columns and filtered_df['time_to_crime'].notna().any():
+        st.markdown("### ⏱️ Timeline Analysis")
+
+        ttc_col1, ttc_col2, ttc_col3, ttc_col4 = st.columns(4)
+
+        with ttc_col1:
+            avg_ttc = filtered_df['time_to_crime'].mean()
+            st.metric("Avg Time to Crime", f"{avg_ttc:.0f} days")
+
+        with ttc_col2:
+            short_ttc = (filtered_df['time_to_crime'] < 1095).sum()
+            short_pct = (short_ttc / filtered_df['time_to_crime'].notna().sum() * 100) if filtered_df['time_to_crime'].notna().any() else 0
+            st.metric("Short TTC (<3yr)", f"{short_ttc}", f"{short_pct:.0f}%")
+
+        with ttc_col3:
+            if 'court' in filtered_df.columns:
+                court_counts = filtered_df['court'].dropna().unique()
+                st.metric("Courts", len(court_counts))
+            else:
+                st.metric("Courts", "N/A")
+
+        with ttc_col4:
+            if 'sale_date' in filtered_df.columns:
+                sale_coverage = filtered_df['sale_date'].notna().sum()
+                sale_pct = (sale_coverage / total_events * 100) if total_events > 0 else 0
+                st.metric("Sale Date Coverage", f"{sale_coverage}", f"{sale_pct:.0f}%")
+            else:
+                st.metric("Sale Date Coverage", "N/A")
+
+    # Crime Location Coverage Section
+    if 'crime_location_state' in filtered_df.columns:
+        st.markdown("### 📍 Crime Location Classification Coverage")
+
+        location_cols = ['crime_location_state', 'crime_location_city', 'crime_location_zip',
+                        'crime_location_court', 'crime_location_pd']
+
+        loc_col1, loc_col2, loc_col3, loc_col4, loc_col5 = st.columns(5)
+
+        with loc_col1:
+            state_count = filtered_df['crime_location_state'].notna().sum()
+            state_pct = (state_count / total_events * 100) if total_events > 0 else 0
+            st.metric("State Classified", f"{state_count}", f"{state_pct:.0f}%")
+
+        with loc_col2:
+            city_count = filtered_df['crime_location_city'].notna().sum() if 'crime_location_city' in filtered_df.columns else 0
+            city_pct = (city_count / total_events * 100) if total_events > 0 else 0
+            st.metric("City Classified", f"{city_count}", f"{city_pct:.0f}%")
+
+        with loc_col3:
+            zip_count = filtered_df['crime_location_zip'].notna().sum() if 'crime_location_zip' in filtered_df.columns else 0
+            zip_pct = (zip_count / total_events * 100) if total_events > 0 else 0
+            st.metric("ZIP Classified", f"{zip_count}", f"{zip_pct:.0f}%")
+
+        with loc_col4:
+            court_count = filtered_df['crime_location_court'].notna().sum() if 'crime_location_court' in filtered_df.columns else 0
+            court_pct = (court_count / total_events * 100) if total_events > 0 else 0
+            st.metric("Court Classified", f"{court_count}", f"{court_pct:.0f}%")
+
+        with loc_col5:
+            pd_count = filtered_df['crime_location_pd'].notna().sum() if 'crime_location_pd' in filtered_df.columns else 0
+            pd_pct = (pd_count / total_events * 100) if total_events > 0 else 0
+            st.metric("PD Classified", f"{pd_count}", f"{pd_pct:.0f}%")
 
     st.markdown("---")
 
@@ -333,8 +398,9 @@ def main():
 
         # Column selector
         available_cols = filtered_df.columns.tolist()
-        default_cols = ['source_dataset', 'source_sheet', 'source_row', 'jurisdiction_state',
-                       'dealer_name', 'dealer_state', 'manufacturer_name', 'case_number']
+        default_cols = ['source_dataset', 'source_row', 'jurisdiction_state',
+                       'dealer_name', 'dealer_state', 'manufacturer_name',
+                       'case_number_clean', 'court', 'sale_date', 'crime_date', 'time_to_crime']
         default_cols = [c for c in default_cols if c in available_cols]
 
         selected_cols = st.multiselect("Select columns", available_cols, default=default_cols)

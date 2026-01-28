@@ -1,0 +1,41 @@
+version: "3.8"
+
+services:
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        PORT: 8501
+    container_name: brady-dashboard
+    ports:
+      - "8501:8501"
+    environment:
+      - PORT=8501
+    volumes:
+      # Mount data directory for development (allows updating data without rebuild)
+      - ./data:/app/data:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+  # Development service with hot reload
+  dashboard-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: brady-dashboard-dev
+    ports:
+      - "8502:8501"
+    volumes:
+      - ./src:/app/src:ro
+      - ./data:/app/data:ro
+    environment:
+      - PORT=8501
+    profiles:
+      - dev
+    restart: unless-stopped

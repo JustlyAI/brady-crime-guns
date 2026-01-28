@@ -12,56 +12,51 @@ This project helps identify patterns in crime gun supply chains:
 
 ## Quick Start
 
-### Installation
-
 ```bash
-# Create virtual environment
-python -m venv .venv
-source .venv/bin/activate  # Linux/Mac
-# .venv\Scripts\activate   # Windows
-
 # Install dependencies
-pip install -r requirements.txt
+uv sync
 
-# Or install as package (editable mode)
-pip install -e .
+# Run dashboard
+uv run streamlit run src/brady/dashboard/app.py
+
+# Run ETL
+uv run python -m brady.etl.process_gunstat
+
+# Run tests
+uv run python -m pytest tests/ -v
 ```
 
-### Run Dashboard
+### Run with Docker
 
 ```bash
-streamlit run src/brady/dashboard/app.py
+# Build and run
+docker compose up --build
+
+# Run in background
+docker compose up -d
+
+# View logs
+docker compose logs -f dashboard
 ```
 
-### Run ETL Pipeline
-
-```bash
-# Process DE Gunstat data
-python -m brady.etl.process_gunstat
-
-# Or with custom paths
-python -m brady.etl.process_gunstat --input data/raw/DE_Gunstat_Final.xlsx
-```
+Access the dashboard at http://localhost:8501
 
 ## Project Structure
 
 ```
 BradyProject/
 ├── src/brady/              # Main package
-│   ├── etl/                # ETL pipeline modules
-│   │   ├── unified.py      # Multi-source ETL
-│   │   ├── process_gunstat.py  # DE Gunstat processor
-│   │   └── google_drive.py # Google Drive integration
-│   └── dashboard/          # Streamlit dashboard
-│       └── app.py
+│   ├── etl/                # ETL pipeline
+│   │   ├── database.py     # SQLite operations
+│   │   └── process_gunstat.py
+│   ├── dashboard/app.py    # Streamlit dashboard
+│   └── utils.py            # Shared utilities
 ├── data/
-│   ├── raw/                # Source files (Excel, CSV)
-│   └── processed/          # Normalized output
-├── docs/                   # Documentation
+│   ├── raw/                # Source Excel/CSV
+│   ├── processed/          # Normalized CSV
+│   └── brady.db            # SQLite database
 ├── tests/                  # Test suite
-├── pyproject.toml          # Package configuration
-├── requirements.txt        # Dependencies
-└── CLAUDE.md               # AI assistant context
+└── pyproject.toml          # Package config
 ```
 
 ## Data Sources
@@ -102,29 +97,52 @@ Guns recovered within 3 years of purchase (< 1095 days) are flagged as "short TT
 
 ## Documentation
 
-See `docs/` for detailed documentation:
-- `project_spec.md` - Full project specification
-- `column_inventory.md` - Data dictionary
-- `etl_planning.md` - ETL pipeline design
-- `etl_readme.md` - ETL usage guide
-- `dashboard_readme.md` - Dashboard details
+See `docs/` for detailed specs and data dictionary.
 
-## Development
+## Deployment
+
+### Docker Build
 
 ```bash
-# Install dev dependencies
-pip install -e ".[dev]"
+# Build for local platform
+docker build -t brady-dashboard .
 
-# Run tests
-pytest
+# Build multi-platform (for deployment)
+docker buildx build --platform linux/amd64,linux/arm64 -t brady-dashboard .
+```
 
-# Run linter
-ruff check src/
+### Railway
 
-# Type checking
-mypy src/
+1. Connect your GitHub repository to Railway
+2. Railway will auto-detect the Dockerfile
+3. Set environment variable: `PORT=8501`
+4. Deploy
+
+### Google Cloud Run
+
+```bash
+# Build and push to GCR
+gcloud builds submit --tag gcr.io/PROJECT_ID/brady-dashboard
+
+# Deploy
+gcloud run deploy brady-dashboard \
+  --image gcr.io/PROJECT_ID/brady-dashboard \
+  --platform managed \
+  --allow-unauthenticated \
+  --port 8501
+```
+
+### GitHub Container Registry
+
+```bash
+# Login to GHCR
+echo $GITHUB_TOKEN | docker login ghcr.io -u USERNAME --password-stdin
+
+# Build and push
+docker build -t ghcr.io/OWNER/brady-dashboard:latest .
+docker push ghcr.io/OWNER/brady-dashboard:latest
 ```
 
 ## License
 
-For Brady Gun Center internal use.
+MIT License - see [LICENSE](LICENSE) for details.
