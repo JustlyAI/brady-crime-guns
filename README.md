@@ -19,11 +19,12 @@ uv sync
 # Run dashboard
 uv run streamlit run src/brady/dashboard/app.py
 
-# Run ETL
+# Run ETL (both datasets)
 uv run python -m brady.etl.process_gunstat
+uv run python -m brady.etl.process_crime_gun_db
 
 # Run tests
-uv run python -m pytest tests/ -v
+uv run pytest tests/ -v
 ```
 
 ### Run with Docker
@@ -48,7 +49,8 @@ BradyProject/
 ├── src/brady/              # Main package
 │   ├── etl/                # ETL pipeline
 │   │   ├── database.py     # SQLite operations
-│   │   └── process_gunstat.py
+│   │   ├── process_gunstat.py
+│   │   └── process_crime_gun_db.py
 │   ├── dashboard/app.py    # Streamlit dashboard
 │   └── utils.py            # Shared utilities
 ├── data/
@@ -64,8 +66,8 @@ BradyProject/
 | Source | Description | Size |
 |--------|-------------|------|
 | DE Gunstat | Delaware crime gun program | 635 records |
+| Crime Gun DB | Court documents, trafficking flows | 2,030 records |
 | PA Trace | Pennsylvania ATF trace data | 275MB |
-| Crime Gun DB | Court documents, trafficking flows | ~500 records |
 | DL2 Letters | Demand Letter 2 dealer list | ~1000 dealers |
 
 ## Key Concepts

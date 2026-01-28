@@ -82,6 +82,17 @@ CREATE TABLE IF NOT EXISTS crime_gun_events (
     has_trafficking_indicia INTEGER DEFAULT 0,
     is_interstate INTEGER DEFAULT 0,
 
+    -- Crime Gun DB specific fields
+    in_dl2_program INTEGER,           -- 2022/23/24 DL2 FFL?
+    is_top_trace_ffl INTEGER,         -- Top trace FFL?
+    is_revoked INTEGER,               -- Revoked FFL?
+    is_charged_or_sued INTEGER,       -- FFL charged/sued?
+    case_name TEXT,                   -- Case citation
+    trafficking_origin TEXT,          -- Origin state code
+    trafficking_destination TEXT,     -- Destination state code
+    is_southwest_border INTEGER,      -- Trafficking to Mexico border
+    facts_narrative TEXT,             -- Case facts
+
     -- Narrative
     case_summary TEXT,
 
@@ -97,6 +108,8 @@ CREATE INDEX IF NOT EXISTS idx_dealer_name ON crime_gun_events(dealer_name);
 CREATE INDEX IF NOT EXISTS idx_manufacturer_name ON crime_gun_events(manufacturer_name);
 CREATE INDEX IF NOT EXISTS idx_time_to_crime ON crime_gun_events(time_to_crime);
 CREATE INDEX IF NOT EXISTS idx_court ON crime_gun_events(court);
+CREATE INDEX IF NOT EXISTS idx_source_dataset ON crime_gun_events(source_dataset);
+CREATE INDEX IF NOT EXISTS idx_trafficking_destination ON crime_gun_events(trafficking_destination);
 """
 
 
@@ -109,6 +122,19 @@ ALTER TABLE crime_gun_events ADD COLUMN time_to_crime INTEGER;
 ALTER TABLE crime_gun_events ADD COLUMN court TEXT;
 ALTER TABLE crime_gun_events ADD COLUMN case_number_clean TEXT;
 """
+
+# Crime Gun DB specific columns
+CRIME_GUN_DB_COLUMNS = [
+    ('in_dl2_program', 'INTEGER'),
+    ('is_top_trace_ffl', 'INTEGER'),
+    ('is_revoked', 'INTEGER'),
+    ('is_charged_or_sued', 'INTEGER'),
+    ('case_name', 'TEXT'),
+    ('trafficking_origin', 'TEXT'),
+    ('trafficking_destination', 'TEXT'),
+    ('is_southwest_border', 'INTEGER'),
+    ('facts_narrative', 'TEXT'),
+]
 
 
 def init_db(db_path: Optional[Path] = None) -> sqlite3.Connection:
@@ -189,6 +215,51 @@ def migrate_add_computed_columns(db_path: Optional[Path] = None) -> bool:
     return True
 
 
+def migrate_add_crime_gun_db_columns(db_path: Optional[Path] = None) -> bool:
+    """
+    Add Crime Gun DB specific columns to existing database if they don't exist.
+
+    Returns:
+        True if migration was needed/performed, False if columns already exist
+    """
+    if db_path is None:
+        db_path = get_db_path()
+
+    if not db_path.exists():
+        return False
+
+    conn = sqlite3.connect(str(db_path))
+    cursor = conn.cursor()
+
+    # Check existing columns
+    cursor.execute("PRAGMA table_info(crime_gun_events)")
+    existing_columns = {row[1] for row in cursor.fetchall()}
+
+    missing = [(col, col_type) for col, col_type in CRIME_GUN_DB_COLUMNS
+               if col not in existing_columns]
+
+    if not missing:
+        cprint("Crime Gun DB columns already exist in database", "green")
+        conn.close()
+        return False
+
+    cprint(f"Adding Crime Gun DB columns: {[c[0] for c in missing]}", "yellow")
+
+    for col, col_type in missing:
+        try:
+            cursor.execute(f"ALTER TABLE crime_gun_events ADD COLUMN {col} {col_type}")
+            cprint(f"  Added column: {col}", "green")
+        except sqlite3.OperationalError as e:
+            if "duplicate column name" not in str(e).lower():
+                cprint(f"  Warning: Could not add column {col}: {e}", "yellow")
+
+    conn.commit()
+    conn.close()
+
+    cprint("Crime Gun DB migration complete", "green")
+    return True
+
+
 def load_df_to_db(df: pd.DataFrame, table_name: str = "crime_gun_events",
                   db_path: Optional[Path] = None,
                   if_exists: Literal["fail", "replace", "append"] = "replace") -> int:
@@ -227,6 +298,16 @@ def load_df_to_db(df: pd.DataFrame, table_name: str = "crime_gun_events",
         'time_to_crime',
         'court',
         'case_number_clean',
+        # Crime Gun DB specific columns
+        'in_dl2_program',
+        'is_top_trace_ffl',
+        'is_revoked',
+        'is_charged_or_sued',
+        'case_name',
+        'trafficking_origin',
+        'trafficking_destination',
+        'is_southwest_border',
+        'facts_narrative',
     ]
 
     for col in new_columns:
@@ -234,10 +315,15 @@ def load_df_to_db(df: pd.DataFrame, table_name: str = "crime_gun_events",
             df[col] = None
 
     # Convert boolean columns to integers for SQLite
-    bool_cols = ['has_nibin', 'has_trafficking_indicia', 'is_interstate']
+    bool_cols = [
+        'has_nibin', 'has_trafficking_indicia', 'is_interstate',
+        'in_dl2_program', 'is_top_trace_ffl', 'is_revoked',
+        'is_charged_or_sued', 'is_southwest_border'
+    ]
     for col in bool_cols:
         if col in df.columns:
-            df[col] = df[col].astype(int)
+            # Use pd.Int64Dtype() to handle nullable integers
+            df[col] = df[col].apply(lambda x: int(x) if pd.notna(x) and x is not None else None)
 
     cprint(f"Loading {len(df)} records to {table_name}...", "yellow")
 
