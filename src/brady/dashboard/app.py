@@ -14,6 +14,8 @@ import sqlite3
 from pathlib import Path
 from typing import Optional
 
+from brady.utils import get_project_root
+
 # Page config
 st.set_page_config(
     page_title="Brady Crime Gun Dashboard",
@@ -45,15 +47,6 @@ st.markdown("""
     }
 </style>
 """, unsafe_allow_html=True)
-
-def get_project_root() -> Path:
-    """Get project root directory (works from any location)"""
-    current = Path(__file__).resolve()
-    # Navigate up from src/brady/dashboard/app.py to project root
-    for parent in current.parents:
-        if (parent / "pyproject.toml").exists() or (parent / "src").exists():
-            return parent
-    return current.parent.parent.parent.parent
 
 
 @st.cache_data

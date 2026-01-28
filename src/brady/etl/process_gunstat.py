@@ -11,15 +11,7 @@ from pathlib import Path
 from termcolor import cprint
 
 from brady.etl.database import load_df_to_db, get_db_path
-
-
-def get_project_root() -> Path:
-    """Get project root directory"""
-    current = Path(__file__).resolve()
-    for parent in current.parents:
-        if (parent / "pyproject.toml").exists() or (parent / "src").exists():
-            return parent
-    return current.parent.parent.parent.parent
+from brady.utils import get_project_root
 
 
 def parse_ffl_field(text):

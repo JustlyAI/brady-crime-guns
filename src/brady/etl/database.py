@@ -12,14 +12,7 @@ from pathlib import Path
 from typing import Literal, Optional
 from termcolor import cprint
 
-
-def get_project_root() -> Path:
-    """Get project root directory."""
-    current = Path(__file__).resolve()
-    for parent in current.parents:
-        if (parent / "pyproject.toml").exists() or (parent / "src").exists():
-            return parent
-    return current.parent.parent.parent.parent
+from brady.utils import get_project_root
 
 
 def get_db_path() -> Path:
@@ -186,10 +179,8 @@ def query_db(sql: str, db_path: Optional[Path] = None) -> pd.DataFrame:
     if db_path is None:
         db_path = get_db_path()
 
-    conn = sqlite3.connect(str(db_path))
-    df = pd.read_sql_query(sql, conn)
-    conn.close()
-    return df
+    with sqlite3.connect(str(db_path)) as conn:
+        return pd.read_sql_query(sql, conn)
 
 
 def get_all_events(db_path: Optional[Path] = None) -> pd.DataFrame:
@@ -199,10 +190,14 @@ def get_all_events(db_path: Optional[Path] = None) -> pd.DataFrame:
 
 def get_events_by_state(state: str, db_path: Optional[Path] = None) -> pd.DataFrame:
     """Get crime gun events for a specific jurisdiction state."""
-    return query_db(
-        f"SELECT * FROM crime_gun_events WHERE jurisdiction_state = '{state}'",
-        db_path
-    )
+    if db_path is None:
+        db_path = get_db_path()
+    with sqlite3.connect(str(db_path)) as conn:
+        return pd.read_sql_query(
+            "SELECT * FROM crime_gun_events WHERE jurisdiction_state = ?",
+            conn,
+            params=[state]
+        )
 
 
 def get_summary_stats(db_path: Optional[Path] = None) -> dict:
@@ -210,33 +205,32 @@ def get_summary_stats(db_path: Optional[Path] = None) -> dict:
     if db_path is None:
         db_path = get_db_path()
 
-    conn = sqlite3.connect(str(db_path))
-    cursor = conn.cursor()
+    with sqlite3.connect(str(db_path)) as conn:
+        cursor = conn.cursor()
 
-    stats = {}
+        stats = {}
 
-    # Total records
-    cursor.execute("SELECT COUNT(*) FROM crime_gun_events")
-    stats['total_records'] = cursor.fetchone()[0]
+        # Total records
+        cursor.execute("SELECT COUNT(*) FROM crime_gun_events")
+        stats['total_records'] = cursor.fetchone()[0]
 
-    # Unique dealers
-    cursor.execute("SELECT COUNT(DISTINCT dealer_name) FROM crime_gun_events")
-    stats['unique_dealers'] = cursor.fetchone()[0]
+        # Unique dealers
+        cursor.execute("SELECT COUNT(DISTINCT dealer_name) FROM crime_gun_events")
+        stats['unique_dealers'] = cursor.fetchone()[0]
 
-    # Unique manufacturers
-    cursor.execute("SELECT COUNT(DISTINCT manufacturer_name) FROM crime_gun_events WHERE manufacturer_name IS NOT NULL")
-    stats['unique_manufacturers'] = cursor.fetchone()[0]
+        # Unique manufacturers
+        cursor.execute("SELECT COUNT(DISTINCT manufacturer_name) FROM crime_gun_events WHERE manufacturer_name IS NOT NULL")
+        stats['unique_manufacturers'] = cursor.fetchone()[0]
 
-    # Interstate count
-    cursor.execute("SELECT SUM(is_interstate) FROM crime_gun_events")
-    stats['interstate_count'] = cursor.fetchone()[0] or 0
+        # Interstate count
+        cursor.execute("SELECT SUM(is_interstate) FROM crime_gun_events")
+        stats['interstate_count'] = cursor.fetchone()[0] or 0
 
-    # Crime location coverage (new columns populated)
-    cursor.execute("SELECT COUNT(*) FROM crime_gun_events WHERE crime_location_state IS NOT NULL")
-    stats['crime_location_populated'] = cursor.fetchone()[0]
+        # Crime location coverage (new columns populated)
+        cursor.execute("SELECT COUNT(*) FROM crime_gun_events WHERE crime_location_state IS NOT NULL")
+        stats['crime_location_populated'] = cursor.fetchone()[0]
 
-    conn.close()
-    return stats
+        return stats
 
 
 def update_crime_location(record_id: int, state: str, city: str, zip_code: str,
@@ -252,25 +246,22 @@ def update_crime_location(record_id: int, state: str, city: str, zip_code: str,
     if db_path is None:
         db_path = get_db_path()
 
-    conn = sqlite3.connect(str(db_path))
-    cursor = conn.cursor()
+    with sqlite3.connect(str(db_path)) as conn:
+        cursor = conn.cursor()
 
-    cursor.execute("""
-        UPDATE crime_gun_events
-        SET crime_location_state = ?,
-            crime_location_city = ?,
-            crime_location_zip = ?,
-            crime_location_court = ?,
-            crime_location_pd = ?,
-            crime_location_reasoning = ?
-        WHERE rowid = ?
-    """, (state, city, zip_code, court, pd, reasoning, record_id))
+        cursor.execute("""
+            UPDATE crime_gun_events
+            SET crime_location_state = ?,
+                crime_location_city = ?,
+                crime_location_zip = ?,
+                crime_location_court = ?,
+                crime_location_pd = ?,
+                crime_location_reasoning = ?
+            WHERE rowid = ?
+        """, (state, city, zip_code, court, pd, reasoning, record_id))
 
-    conn.commit()
-    success = cursor.rowcount > 0
-    conn.close()
-
-    return success
+        conn.commit()
+        return cursor.rowcount > 0
 
 
 if __name__ == "__main__":
