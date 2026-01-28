@@ -11,6 +11,8 @@ from pathlib import Path
 from termcolor import cprint
 
 from brady.etl.database import load_df_to_db, get_db_path
+from brady.etl.date_utils import parse_purchase_date, calculate_crime_date, parse_time_to_recovery
+from brady.etl.court_lookup import lookup_court, normalize_case_number
 from brady.utils import get_project_root
 
 
@@ -198,6 +200,18 @@ def main(input_path: str = None, output_path: str = None):
         dealer_state = ffl_info['dealer_state']
         is_interstate = dealer_state is not None and dealer_state != 'DE'
 
+        # Compute timing fields
+        sale_date = parse_purchase_date(firearm_info['purchase_date'])
+        ttr_int = parse_time_to_recovery(ttr)
+        crime_date = None
+        if sale_date and ttr_int is not None:
+            crime_date = calculate_crime_date(sale_date, ttr_int)
+
+        # Compute court fields
+        raw_case_number = case_info['case_number']
+        court_name = lookup_court(raw_case_number)
+        case_number_clean = normalize_case_number(raw_case_number)
+
         record = {
             'source_dataset': 'DE_GUNSTAT',
             'source_sheet': 'all identified dealers',
@@ -239,9 +253,16 @@ def main(input_path: str = None, output_path: str = None):
             'purchase_date': firearm_info['purchase_date'],
             'purchaser_name': firearm_info['purchaser'],
 
-            # Timing
+            # Timing (raw)
             'time_to_recovery': ttr,
             'ttr_category': ttr_category,
+
+            # Timing (computed)
+            'sale_date': sale_date.isoformat() if sale_date else None,
+            'crime_date': crime_date.isoformat() if crime_date else None,
+            'time_to_crime': ttr_int,
+            'court': court_name,
+            'case_number_clean': case_number_clean,
 
             # Risk indicators
             'has_nibin': has_nibin,
@@ -289,6 +310,21 @@ def main(input_path: str = None, output_path: str = None):
     print(f"\nInterstate Trafficking: {events_df['is_interstate'].sum()} ({events_df['is_interstate'].mean()*100:.1f}%)")
     print(f"\nCase Status:")
     print(events_df['case_status'].value_counts())
+
+    # New computed columns summary
+    print(f"\n" + "-" * 40)
+    print("COMPUTED COLUMN COVERAGE:")
+    print(f"  sale_date:         {events_df['sale_date'].notna().sum()}/{len(events_df)} ({events_df['sale_date'].notna().mean()*100:.1f}%)")
+    print(f"  crime_date:        {events_df['crime_date'].notna().sum()}/{len(events_df)} ({events_df['crime_date'].notna().mean()*100:.1f}%)")
+    print(f"  time_to_crime:     {events_df['time_to_crime'].notna().sum()}/{len(events_df)} ({events_df['time_to_crime'].notna().mean()*100:.1f}%)")
+    print(f"  court:             {events_df['court'].notna().sum()}/{len(events_df)} ({events_df['court'].notna().mean()*100:.1f}%)")
+    print(f"  case_number_clean: {events_df['case_number_clean'].notna().sum()}/{len(events_df)} ({events_df['case_number_clean'].notna().mean()*100:.1f}%)")
+
+    if events_df['time_to_crime'].notna().any():
+        avg_ttc = events_df['time_to_crime'].mean()
+        short_ttc = (events_df['time_to_crime'] < 1095).sum()
+        print(f"\n  Avg Time to Crime: {avg_ttc:.0f} days")
+        print(f"  Short TTC (<3yr):  {short_ttc}")
 
     cprint("\n✅ Data processing complete!", "green", attrs=["bold"])
 

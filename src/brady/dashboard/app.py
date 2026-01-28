@@ -181,6 +181,36 @@ def main():
         pending_count = filtered_df[filtered_df['case_status'] == 'Pending'].shape[0] if 'case_status' in filtered_df.columns else 0
         st.metric("Pending Cases", f"{pending_count:,}")
 
+    # Timeline Analysis Section (new computed columns)
+    if 'time_to_crime' in filtered_df.columns and filtered_df['time_to_crime'].notna().any():
+        st.markdown("### ⏱️ Timeline Analysis")
+
+        ttc_col1, ttc_col2, ttc_col3, ttc_col4 = st.columns(4)
+
+        with ttc_col1:
+            avg_ttc = filtered_df['time_to_crime'].mean()
+            st.metric("Avg Time to Crime", f"{avg_ttc:.0f} days")
+
+        with ttc_col2:
+            short_ttc = (filtered_df['time_to_crime'] < 1095).sum()
+            short_pct = (short_ttc / filtered_df['time_to_crime'].notna().sum() * 100) if filtered_df['time_to_crime'].notna().any() else 0
+            st.metric("Short TTC (<3yr)", f"{short_ttc}", f"{short_pct:.0f}%")
+
+        with ttc_col3:
+            if 'court' in filtered_df.columns:
+                court_counts = filtered_df['court'].dropna().unique()
+                st.metric("Courts", len(court_counts))
+            else:
+                st.metric("Courts", "N/A")
+
+        with ttc_col4:
+            if 'sale_date' in filtered_df.columns:
+                sale_coverage = filtered_df['sale_date'].notna().sum()
+                sale_pct = (sale_coverage / total_events * 100) if total_events > 0 else 0
+                st.metric("Sale Date Coverage", f"{sale_coverage}", f"{sale_pct:.0f}%")
+            else:
+                st.metric("Sale Date Coverage", "N/A")
+
     # Crime Location Coverage Section
     if 'crime_location_state' in filtered_df.columns:
         st.markdown("### 📍 Crime Location Classification Coverage")
@@ -368,9 +398,9 @@ def main():
 
         # Column selector
         available_cols = filtered_df.columns.tolist()
-        default_cols = ['source_dataset', 'source_sheet', 'source_row', 'jurisdiction_state',
-                       'crime_location_state', 'crime_location_city', 'crime_location_pd',
-                       'dealer_name', 'dealer_state', 'manufacturer_name', 'case_number']
+        default_cols = ['source_dataset', 'source_row', 'jurisdiction_state',
+                       'dealer_name', 'dealer_state', 'manufacturer_name',
+                       'case_number_clean', 'court', 'sale_date', 'crime_date', 'time_to_crime']
         default_cols = [c for c in default_cols if c in available_cols]
 
         selected_cols = st.multiselect("Select columns", available_cols, default=default_cols)

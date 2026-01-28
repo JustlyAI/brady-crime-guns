@@ -1,4 +1,0 @@
-- [ ] Add sale_date
-- [ ] Add crime_date
-- [ ] Add time_to_crime
-- [ ] Court + Case Number

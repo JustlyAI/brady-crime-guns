@@ -66,9 +66,16 @@ CREATE TABLE IF NOT EXISTS crime_gun_events (
     purchase_date TEXT,
     purchaser_name TEXT,
 
-    -- Timing
+    -- Timing (raw)
     time_to_recovery TEXT,
     ttr_category TEXT,
+
+    -- Timing (computed)
+    sale_date TEXT,           -- YYYY-MM-DD (normalized from purchase_date)
+    crime_date TEXT,          -- YYYY-MM-DD (sale_date + time_to_recovery)
+    time_to_crime INTEGER,    -- Days as integer
+    court TEXT,               -- Full court name from lookup
+    case_number_clean TEXT,   -- Normalized case number format
 
     -- Risk indicators
     has_nibin INTEGER DEFAULT 0,
@@ -88,6 +95,19 @@ CREATE INDEX IF NOT EXISTS idx_jurisdiction_state ON crime_gun_events(jurisdicti
 CREATE INDEX IF NOT EXISTS idx_crime_location_state ON crime_gun_events(crime_location_state);
 CREATE INDEX IF NOT EXISTS idx_dealer_name ON crime_gun_events(dealer_name);
 CREATE INDEX IF NOT EXISTS idx_manufacturer_name ON crime_gun_events(manufacturer_name);
+CREATE INDEX IF NOT EXISTS idx_time_to_crime ON crime_gun_events(time_to_crime);
+CREATE INDEX IF NOT EXISTS idx_court ON crime_gun_events(court);
+"""
+
+
+# Migration for adding computed columns to existing database
+MIGRATION_COMPUTED_COLUMNS = """
+-- Add computed timing columns if they don't exist
+ALTER TABLE crime_gun_events ADD COLUMN sale_date TEXT;
+ALTER TABLE crime_gun_events ADD COLUMN crime_date TEXT;
+ALTER TABLE crime_gun_events ADD COLUMN time_to_crime INTEGER;
+ALTER TABLE crime_gun_events ADD COLUMN court TEXT;
+ALTER TABLE crime_gun_events ADD COLUMN case_number_clean TEXT;
 """
 
 
@@ -117,6 +137,56 @@ def get_connection(db_path: Optional[Path] = None) -> sqlite3.Connection:
         return init_db(db_path)
 
     return sqlite3.connect(str(db_path))
+
+
+def migrate_add_computed_columns(db_path: Optional[Path] = None) -> bool:
+    """
+    Add computed columns to existing database if they don't exist.
+
+    Returns:
+        True if migration was needed/performed, False if columns already exist
+    """
+    if db_path is None:
+        db_path = get_db_path()
+
+    if not db_path.exists():
+        return False
+
+    conn = sqlite3.connect(str(db_path))
+    cursor = conn.cursor()
+
+    # Check if columns already exist
+    cursor.execute("PRAGMA table_info(crime_gun_events)")
+    columns = {row[1] for row in cursor.fetchall()}
+
+    new_columns = ['sale_date', 'crime_date', 'time_to_crime', 'court', 'case_number_clean']
+    missing = [col for col in new_columns if col not in columns]
+
+    if not missing:
+        cprint("Computed columns already exist in database", "green")
+        conn.close()
+        return False
+
+    cprint(f"Adding missing columns: {missing}", "yellow")
+
+    for col in missing:
+        if col == 'time_to_crime':
+            col_type = 'INTEGER'
+        else:
+            col_type = 'TEXT'
+
+        try:
+            cursor.execute(f"ALTER TABLE crime_gun_events ADD COLUMN {col} {col_type}")
+            cprint(f"  Added column: {col}", "green")
+        except sqlite3.OperationalError as e:
+            if "duplicate column name" not in str(e).lower():
+                cprint(f"  Warning: Could not add column {col}: {e}", "yellow")
+
+    conn.commit()
+    conn.close()
+
+    cprint("Migration complete", "green")
+    return True
 
 
 def load_df_to_db(df: pd.DataFrame, table_name: str = "crime_gun_events",
@@ -150,7 +220,13 @@ def load_df_to_db(df: pd.DataFrame, table_name: str = "crime_gun_events",
         'crime_location_zip',
         'crime_location_court',
         'crime_location_pd',
-        'crime_location_reasoning'
+        'crime_location_reasoning',
+        # Computed timing columns
+        'sale_date',
+        'crime_date',
+        'time_to_crime',
+        'court',
+        'case_number_clean',
     ]
 
     for col in new_columns:
