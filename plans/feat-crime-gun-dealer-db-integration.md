@@ -1,7 +1,7 @@
 # Crime Gun Dealer DB Integration - Implementation Plan
 
 **Project:** Brady Unified Gun Crime Database
-**Version:** 1.0
+**Version:** 2.0 (Simplified)
 **Date:** January 27, 2026
 **Type:** Feature Implementation
 
@@ -9,48 +9,34 @@
 
 ## Overview
 
-Integrate the Crime Gun Dealer Criminal Database (`Crime_Gun_Dealer_DB.xlsx`) into the Brady ETL pipeline. This dataset contains **1,981 court case records** linking FFLs to crime guns with detailed case narratives, recovery locations, and trafficking flow data.
+Integrate the Crime Gun Dealer Criminal Database (`Crime_Gun_Dealer_DB.xlsx`) into the Brady ETL pipeline. Dataset contains **1,981 court case records** linking FFLs to crime guns.
 
 ### Strategic Value
 
-- Court-level evidence linking FFLs to crime guns (missing from trace-only data)
-- Interstate trafficking patterns from source to destination states
+- Court-level evidence linking FFLs to crime guns
+- Interstate trafficking patterns
 - Time-to-crime indicators for high-risk dealer identification
-- Dealer risk profiles for nuisance litigation support
 
 ---
 
 ## Acceptance Criteria
 
-### Functional Requirements
-
-- [ ] Load all sheets from `Crime_Gun_Dealer_DB.xlsx` (skip Sheet7 per requirements)
+- [ ] Load all sheets from `Crime_Gun_Dealer_DB.xlsx` (skip Sheet7)
 - [ ] Process 1,981 CG court doc FFLs records with no data loss
 - [ ] Process 54 Philadelphia Trace records with PA implicit jurisdiction
-- [ ] Handle empty Rochester Trace and Backdated sheets gracefully
-- [ ] Extract recovery locations from Column R with 80%+ success rate
+- [ ] Extract recovery locations from Column R (80%+ success)
 - [ ] Parse federal district court references from Column N
 - [ ] Extract trafficking flows (e.g., "AK-->CA") from Column P
-- [ ] Convert boolean fields (DL2, top trace, revoked, charged) to True/False/NULL
+- [ ] Convert boolean fields to True/False/NULL
 - [ ] Parse time-to-crime to integer days
-- [ ] Maintain 100% source traceability (dataset, sheet, row, method, confidence)
-- [ ] Append to existing `crime_gun_events` table without data loss
-- [ ] All existing tests pass, new tests added
-
-### Data Quality Targets
-
-| Metric | Target | Minimum |
-|--------|--------|---------|
-| Records with jurisdiction identified | 90% | 75% |
-| High-confidence jurisdiction | 60% | 40% |
-| Valid FFL state codes | 99% | 95% |
-| Trafficking flows extracted | 95% | 85% |
+- [ ] Maintain source traceability (dataset, sheet, row)
+- [ ] All tests pass
 
 ---
 
 ## Technical Approach
 
-### Architecture
+### Architecture (Simplified)
 
 ```
 Crime_Gun_Dealer_DB.xlsx
@@ -58,35 +44,29 @@ Crime_Gun_Dealer_DB.xlsx
         ▼
 ┌────────────────────────────────────────────┐
 │  src/brady/etl/process_crime_gun_db.py     │
-│  ├── load_crime_gun_db()                   │
-│  ├── parse_recovery_locations()            │
-│  ├── parse_federal_court()                 │
-│  ├── parse_trafficking_flow()              │
-│  ├── convert_boolean_field()               │
-│  ├── parse_time_to_crime()                 │
-│  ├── determine_jurisdiction()              │
-│  └── transform_to_unified()                │
+│  └── main()                                │
+│      ├── load_sheets()                     │
+│      ├── clean_and_transform()             │
+│      └── save_to_db()                      │
 └────────────────────────────────────────────┘
         │
-        ├──▶ data/processed/crime_gun_events.csv (append)
-        │
-        └──▶ data/brady.db (append to crime_gun_events table)
+        └──▶ data/brady.db (crime_gun_events table)
 ```
 
 ### Key Design Decisions
 
-1. **Single record per row** - Multi-location recoveries stored as JSON array, not exploded
-2. **Strict boolean conversion** - Only "Yes"/"True" = True; "Maybe"/"Unclear" = NULL
-3. **Append strategy** - Use composite key (source_dataset, source_sheet, source_row) for upsert
-4. **Jurisdiction priority** - Recovery location > Court > Trafficking flow > Sheet default
+1. **Simple delete-then-insert** - No UPSERT complexity. Delete by `source_dataset`, then insert.
+2. **No confidence scoring** - Use priority order only, store `jurisdiction_method` for auditability
+3. **First location wins** - For multi-location recoveries, take first parsed location
+4. **Strict boolean conversion** - Only "Yes"/"True" = True; everything else = NULL or False
 
 ---
 
 ## Implementation Phases
 
-### Phase 1: Core Module Structure
+### Phase 1: Parse Excel Data
 
-Create the new ETL module with basic loading and schema.
+Create the ETL module that loads and transforms the Excel data.
 
 **Files to Create:**
 
@@ -97,60 +77,139 @@ tests/test_process_crime_gun_db.py
 
 **Tasks:**
 
-- [ ] Create `process_crime_gun_db.py` with module skeleton
-- [ ] Implement `load_crime_gun_db(xlsx_path)` - loads all sheets, skips Sheet7
-- [ ] Implement column mapping from source to unified schema
-- [ ] Add source traceability fields (source_dataset, source_sheet, source_row)
-- [ ] Create test file with fixtures from `v_2/test_fixtures.py`
+- [ ] Create `process_crime_gun_db.py` with single `main()` entry point
+- [ ] Load all sheets, skip Sheet7
+- [ ] Parse recovery locations (city, state)
+- [ ] Parse federal court references
+- [ ] Extract trafficking flows
+- [ ] Convert boolean fields
+- [ ] Parse time-to-crime to integer days
+- [ ] Write unit tests
 
-**Key Functions:**
+**Regex Patterns (Fixed for edge cases):**
 
 ```python
-# src/brady/etl/process_crime_gun_db.py
+import re
 
-def load_crime_gun_db(xlsx_path: str) -> dict[str, pd.DataFrame]:
-    """Load all sheets except Sheet7, handle empty sheets gracefully."""
+# Recovery location - handles hyphens, apostrophes, periods in city names
+# Examples: "Sacramento, CA", "St. Louis, MO", "Winston-Salem, NC"
+_RECOVERY_PATTERN = re.compile(
+    r'(?:\d+\.\s*)?([A-Za-z][A-Za-z\s\.\-\']+?),\s*([A-Z]{2})(?:\s|$|\))'
+)
 
-COLUMN_MAP = {
-    'A': 'ffl_name',           # FFL column
-    'B': 'ffl_premise_street', # Address
-    'C': 'ffl_premise_city',   # City
-    'D': 'ffl_premise_state',  # State
-    'F': 'ffl_license_number', # license number
-    'N': 'case_raw',           # Case (for court parsing)
-    'P': 'case_subject_raw',   # Case subject (for trafficking)
-    'R': 'recovery_raw',       # Location(s) of recovery
-    'S': 'recovery_info',      # Info on recoveries
-    'T': 'ttc_raw',            # Time-to-crime raw
-    'U': 'facts_narrative',    # Facts narrative
+# Trafficking flow: "AK-->CA", "TX->SWB"
+_FLOW_PATTERN = re.compile(
+    r'([A-Z]{2})\s*(?:--?>|==?>)\s*([A-Z]{2}|SWB)'
+)
+
+# Federal court abbreviation to state code mapping
+COURT_STATE_MAP = {
+    'Alaska': 'AK', 'Ariz.': 'AZ', 'Cal.': 'CA', 'Colo.': 'CO',
+    'Conn.': 'CT', 'Del.': 'DE', 'Fla.': 'FL', 'Ga.': 'GA',
+    'Ill.': 'IL', 'Ind.': 'IN', 'Kan.': 'KS', 'Ky.': 'KY',
+    'La.': 'LA', 'Mass.': 'MA', 'Md.': 'MD', 'Mich.': 'MI',
+    'Minn.': 'MN', 'Mo.': 'MO', 'N.J.': 'NJ', 'N.Y.': 'NY',
+    'N.C.': 'NC', 'Ohio': 'OH', 'Okla.': 'OK', 'Or.': 'OR',
+    'Pa.': 'PA', 'Tenn.': 'TN', 'Tex.': 'TX', 'Va.': 'VA',
+    'Wash.': 'WA', 'W.Va.': 'WV', 'Wis.': 'WI',
 }
 ```
 
-### Phase 2: Parsing Functions
-
-Implement all parsing functions for extracting structured data from text fields.
-
-**Tasks:**
-
-- [ ] Implement `parse_recovery_locations(text)` - extracts city/state pairs
-- [ ] Implement `parse_federal_court(text)` - parses "D. Alaska", "E.D. Pa.", etc.
-- [ ] Implement `parse_trafficking_flow(text)` - extracts "AK-->CA" patterns
-- [ ] Implement `convert_boolean_field(value)` - Yes/No to True/False/NULL
-- [ ] Implement `parse_time_to_crime(text)` - text to integer days
-- [ ] Implement `clean_ffl_name(text)` - handle "aka" patterns, whitespace
-- [ ] Write unit tests for each parsing function
-
-**Regex Patterns:**
+**Core Functions:**
 
 ```python
-# Recovery location: "1. Woodland, CA" or "Sacramento, CA"
-RECOVERY_PATTERN = r'(?:\d+\.\s*)?([A-Za-z\s]+),\s*([A-Z]{2})\b'
+def parse_recovery_location(text: str) -> tuple[str, str] | None:
+    """Extract first (city, state) from recovery location text."""
+    if not text or pd.isna(text):
+        return None
+    match = _RECOVERY_PATTERN.search(str(text))
+    if match:
+        return (match.group(1).strip(), match.group(2))
+    return None
 
-# Federal court: "D. Alaska", "E.D. Pa.", "S.D.N.Y."
-COURT_PATTERN = r'([NSEWCM]\.?D\.?)\s*(?:of\s+)?([A-Za-z\.]+)'
+def parse_court_state(text: str) -> str | None:
+    """Extract state code from federal court reference."""
+    if not text or pd.isna(text):
+        return None
+    text = str(text)
+    for abbrev, state_code in COURT_STATE_MAP.items():
+        if abbrev in text:
+            return state_code
+    return None
 
-# Trafficking flow: "AK-->CA"
-FLOW_PATTERN = r'([A-Z]{2})\s*(?:-->|->|==>|=>)\s*([A-Z]{2}|SWB)'
+def parse_trafficking_flow(text: str) -> tuple[str, str] | None:
+    """Extract (origin, destination) from trafficking flow text."""
+    if not text or pd.isna(text):
+        return None
+    match = _FLOW_PATTERN.search(str(text).upper())
+    if match:
+        return (match.group(1), match.group(2))
+    return None
+
+def convert_boolean(value) -> bool | None:
+    """Convert Yes/No/True/False to boolean. Unknown = None."""
+    if pd.isna(value):
+        return None
+    val = str(value).strip().lower()
+    if val in ('yes', 'true', '1'):
+        return True
+    if val in ('no', 'false', '0'):
+        return False
+    return None
+
+def parse_time_to_crime(text: str) -> int | None:
+    """Parse time-to-crime to integer days. Unknown = None."""
+    if not text or pd.isna(text):
+        return None
+    text = str(text).lower().strip()
+    # Try to extract number of days
+    match = re.search(r'(\d+)\s*(?:days?)?', text)
+    if match:
+        return int(match.group(1))
+    # Handle months
+    match = re.search(r'(\d+)\s*months?', text)
+    if match:
+        return int(match.group(1)) * 30
+    return None
+
+def get_jurisdiction(row: pd.Series, sheet_name: str) -> tuple[str, str, str]:
+    """
+    Get jurisdiction using priority chain. Returns (state, city, method).
+
+    Priority:
+    1. Recovery location (Column R)
+    2. Court reference (Column N)
+    3. Trafficking destination (Column P)
+    4. Sheet default (Philadelphia=PA, Rochester=NY)
+    5. Dealer state (Column D)
+    """
+    # Priority 1: Recovery location
+    recovery = parse_recovery_location(row.get('recovery_raw'))
+    if recovery:
+        return (recovery[1], recovery[0], 'RECOVERY')
+
+    # Priority 2: Court reference
+    court_state = parse_court_state(row.get('case_raw'))
+    if court_state:
+        return (court_state, None, 'COURT')
+
+    # Priority 3: Trafficking destination
+    flow = parse_trafficking_flow(row.get('case_subject_raw'))
+    if flow and flow[1] != 'SWB':
+        return (flow[1], None, 'TRAFFICKING')
+
+    # Priority 4: Sheet default
+    if 'Philadelphia' in sheet_name:
+        return ('PA', 'Philadelphia', 'SHEET_DEFAULT')
+    if 'Rochester' in sheet_name:
+        return ('NY', 'Rochester', 'SHEET_DEFAULT')
+
+    # Priority 5: Dealer state
+    dealer_state = row.get('ffl_premise_state')
+    if dealer_state and not pd.isna(dealer_state):
+        return (str(dealer_state).strip().upper(), None, 'DEALER_STATE')
+
+    return (None, None, 'UNKNOWN')
 ```
 
 **Test Cases:**
@@ -158,330 +217,241 @@ FLOW_PATTERN = r'([A-Z]{2})\s*(?:-->|->|==>|=>)\s*([A-Z]{2}|SWB)'
 ```python
 # tests/test_process_crime_gun_db.py
 
-def test_parse_recovery_locations_single():
-    result = parse_recovery_locations("Sacramento, CA")
-    assert result == [{"city": "Sacramento", "state": "CA"}]
+def test_parse_recovery_location_simple():
+    assert parse_recovery_location("Sacramento, CA") == ("Sacramento", "CA")
 
-def test_parse_recovery_locations_numbered_list():
-    text = "1. Woodland, CA\n2. Citrus Heights, CA"
-    result = parse_recovery_locations(text)
-    assert len(result) == 2
-    assert result[0]["state"] == "CA"
-    assert result[1]["city"] == "Citrus Heights"
+def test_parse_recovery_location_numbered():
+    assert parse_recovery_location("1. Woodland, CA") == ("Woodland", "CA")
 
-def test_parse_federal_court_single_district():
-    result = parse_federal_court("D. Alaska")
-    assert result["state"] == "AK"
-    assert result["confidence"] == "HIGH"
+def test_parse_recovery_location_hyphenated():
+    assert parse_recovery_location("Winston-Salem, NC") == ("Winston-Salem", "NC")
 
-def test_parse_federal_court_multi_district():
-    result = parse_federal_court("E.D. Pa.")
-    assert result["state"] == "PA"
-    assert "Eastern" in result["court_name"]
+def test_parse_recovery_location_apostrophe():
+    assert parse_recovery_location("O'Fallon, MO") == ("O'Fallon", "MO")
 
-def test_parse_trafficking_flow_basic():
-    result = parse_trafficking_flow("AK-->CA")
-    assert result["origin"] == "AK"
-    assert result["destination"] == "CA"
+def test_parse_recovery_location_period():
+    assert parse_recovery_location("St. Louis, MO") == ("St. Louis", "MO")
 
-def test_convert_boolean_yes():
-    assert convert_boolean_field("Yes") is True
+def test_parse_recovery_location_empty():
+    assert parse_recovery_location("") is None
+    assert parse_recovery_location(None) is None
 
-def test_convert_boolean_unclear():
-    assert convert_boolean_field("Unclear") is None
+def test_parse_court_state():
+    assert parse_court_state("D. Alaska") == "AK"
+    assert parse_court_state("E.D. Pa.") == "PA"
+    assert parse_court_state("S.D.N.Y.") == "NY"
+    assert parse_court_state("garbage") is None
+
+def test_parse_trafficking_flow():
+    assert parse_trafficking_flow("AK-->CA") == ("AK", "CA")
+    assert parse_trafficking_flow("TX->SWB") == ("TX", "SWB")
+    assert parse_trafficking_flow("no flow here") is None
+
+def test_convert_boolean():
+    assert convert_boolean("Yes") is True
+    assert convert_boolean("No") is False
+    assert convert_boolean("Unclear") is None
+    assert convert_boolean("Maybe") is None
+
+def test_parse_time_to_crime():
+    assert parse_time_to_crime("35 days") == 35
+    assert parse_time_to_crime("5 months") == 150
+    assert parse_time_to_crime("unclear") is None
 ```
 
-### Phase 3: Jurisdiction Extraction
+### Phase 2: Load to Database
 
-Implement the multi-stage jurisdiction extraction with confidence scoring.
+Save transformed data to SQLite with simple delete-then-insert.
 
 **Tasks:**
 
-- [ ] Create `JurisdictionResult` dataclass with state, city, method, confidence
-- [ ] Implement `determine_jurisdiction(row, sheet_name)` - priority chain
-- [ ] Add sheet-level defaults for Philadelphia (PA) and Rochester (NY)
-- [ ] Handle dealer state fallback for non-matching FFLs
-- [ ] Test jurisdiction priority with conflicting signals
-
-**Jurisdiction Priority Chain:**
-
-```python
-@dataclass
-class JurisdictionResult:
-    state: Optional[str]
-    city: Optional[str]
-    method: str  # EXPLICIT_RECOVERY | CASE_COURT | TRAFFICKING_FLOW | IMPLICIT
-    confidence: str  # HIGH | MEDIUM | LOW
-
-def determine_jurisdiction(row: pd.Series, sheet_name: str) -> JurisdictionResult:
-    """
-    Priority order:
-    1. Column R (recovery location) - HIGH confidence
-    2. Column N (court reference) - MEDIUM-HIGH confidence
-    3. Column P (trafficking destination) - MEDIUM confidence
-    4. Sheet-level default - MEDIUM confidence
-    5. Dealer state - LOW confidence
-    """
-```
-
-### Phase 4: Schema Transformation
-
-Map extracted data to the unified crime_gun_events schema.
-
-**Tasks:**
-
-- [ ] Implement `transform_to_unified(df, sheet_name)` - full schema mapping
-- [ ] Add trafficking indicators (DV*, SWB) as separate columns
-- [ ] Handle NULL/missing values appropriately
-- [ ] Validate state codes against US_STATES set
-- [ ] Log warnings for unparseable values
-
-**Schema Additions:**
-
-```python
-# New columns for crime_gun_events table
-NEW_COLUMNS = {
-    'in_dl2_program': 'boolean',        # DL2 FFL flag
-    'is_top_trace_ffl': 'boolean',      # Top trace designation
-    'is_revoked': 'boolean',            # License revoked
-    'is_charged_or_sued': 'boolean',    # Legal action status
-    'case_name': 'text',                # Parsed case name
-    'case_court': 'text',               # Normalized court name
-    'case_court_raw': 'text',           # Original court reference
-    'trafficking_origin': 'text',       # Origin state
-    'trafficking_destination': 'text',  # Destination state/country
-    'trafficking_flow_raw': 'text',     # Original flow text
-    'is_domestic_violence': 'boolean',  # DV* indicator
-    'is_southwest_border': 'boolean',   # SWB indicator
-    'recovery_locations': 'json',       # Array of city/state
-    'jurisdiction_method': 'text',      # EXPLICIT/COURT/FLOW/IMPLICIT
-    'jurisdiction_confidence': 'text',  # HIGH/MEDIUM/LOW
-}
-```
-
-### Phase 5: Database Integration
-
-Modify database loading to append data without loss.
-
-**Tasks:**
-
-- [ ] Update `database.py` to support UPSERT by composite key
-- [ ] Modify `load_df_to_db()` to use `if_exists='append'` with dedup
-- [ ] Add migration for new schema columns
-- [ ] Test incremental loading (DE Gunstat + Crime Gun DB)
+- [ ] Delete existing records where `source_dataset = 'CRIME_GUN_DB'`
+- [ ] Insert new records
 - [ ] Verify dashboard loads combined data correctly
-
-**Database Changes:**
-
-```python
-# src/brady/etl/database.py
-
-def load_df_to_db(df: pd.DataFrame, table_name: str, db_path: str,
-                  if_exists: str = 'append',
-                  unique_keys: list = None) -> None:
-    """
-    Load DataFrame to SQLite with optional upsert behavior.
-
-    If unique_keys provided, delete existing rows with matching keys
-    before inserting new rows.
-    """
-    if unique_keys:
-        # Delete existing records with matching source keys
-        delete_existing_by_keys(db_path, table_name, df, unique_keys)
-
-    df.to_sql(table_name, conn, if_exists=if_exists, index=False)
-
-# Composite key for deduplication
-UNIQUE_KEYS = ['source_dataset', 'source_sheet', 'source_row']
-```
-
-### Phase 6: Main Entry Point & CLI
-
-Create the main orchestration function and CLI interface.
-
-**Tasks:**
-
-- [ ] Implement `main(input_path, output_csv, db_path)` entry point
-- [ ] Add termcolor progress output matching existing ETL style
-- [ ] Generate data quality report at end
-- [ ] Add CLI via `uv run python -m brady.etl.process_crime_gun_db`
-- [ ] Document in README
+- [ ] Print quality summary
 
 **Main Function:**
 
 ```python
-def main(input_path: str = None, output_path: str = None, db_path: str = None):
+def main():
     """
     Main entry point for Crime Gun DB ETL.
 
     Usage:
         uv run python -m brady.etl.process_crime_gun_db
     """
+    from brady.utils import get_project_root
+    from brady.etl.database import get_db_path
+    from termcolor import cprint
+
     cprint("=" * 60, "cyan")
     cprint("PROCESSING CRIME GUN DEALER DATABASE", "cyan", attrs=["bold"])
 
-    # Load all sheets
-    sheets = load_crime_gun_db(input_path)
+    root = get_project_root()
+    xlsx_path = root / "data" / "raw" / "Crime_Gun_Dealer_DB.xlsx"
+    db_path = get_db_path()
 
-    # Process each sheet
+    # Load sheets (skip Sheet7)
+    cprint(f"Loading: {xlsx_path}", "green")
+    xlsx = pd.ExcelFile(xlsx_path)
+    skip_sheets = {'Sheet7', 'Backdated'}
+
     all_records = []
-    for sheet_name, df in sheets.items():
-        cprint(f"Processing sheet: {sheet_name} ({len(df)} rows)", "green")
-        transformed = transform_to_unified(df, sheet_name)
-        all_records.append(transformed)
+    for sheet_name in xlsx.sheet_names:
+        if sheet_name in skip_sheets:
+            cprint(f"  Skipping sheet: {sheet_name}", "yellow")
+            continue
 
-    # Combine and save
-    combined = pd.concat(all_records, ignore_index=True)
+        df = pd.read_excel(xlsx, sheet_name=sheet_name)
+        if df.empty:
+            cprint(f"  Empty sheet: {sheet_name}", "yellow")
+            continue
 
-    # Save to CSV
-    combined.to_csv(output_path, index=False)
-    cprint(f"Saved {len(combined)} records to {output_path}", "green")
+        cprint(f"  Processing: {sheet_name} ({len(df)} rows)", "green")
 
-    # Save to database
-    load_df_to_db(combined, 'crime_gun_events', db_path,
-                  unique_keys=['source_dataset', 'source_sheet', 'source_row'])
-    cprint(f"Loaded to database: {db_path}", "green")
+        # Transform each row
+        for idx, row in df.iterrows():
+            record = transform_row(row, sheet_name, idx + 2)  # +2 for header + 0-index
+            if record:
+                all_records.append(record)
 
-    # Quality report
-    print_quality_report(combined)
+    result_df = pd.DataFrame(all_records)
+    cprint(f"Transformed {len(result_df)} records", "green")
+
+    # Delete existing and insert new
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("DELETE FROM crime_gun_events WHERE source_dataset = 'CRIME_GUN_DB'")
+        result_df.to_sql('crime_gun_events', conn, if_exists='append', index=False)
+
+    cprint(f"Saved to: {db_path}", "green")
+
+    # Quality summary
+    cprint("\n" + "=" * 60, "cyan")
+    cprint("QUALITY SUMMARY", "cyan", attrs=["bold"])
+    total = len(result_df)
+    with_jurisdiction = result_df['jurisdiction_state'].notna().sum()
+    cprint(f"  Total records: {total}", "white")
+    cprint(f"  With jurisdiction: {with_jurisdiction} ({100*with_jurisdiction/total:.1f}%)", "white")
+
+
+def transform_row(row: pd.Series, sheet_name: str, source_row: int) -> dict | None:
+    """Transform a single row to unified schema."""
+    # Skip garbage rows
+    ffl_name = row.get('FFL') or row.iloc[0]
+    if pd.isna(ffl_name) or str(ffl_name).strip() == '?':
+        return None
+
+    # Get jurisdiction
+    state, city, method = get_jurisdiction(row, sheet_name)
+
+    # Parse trafficking flow
+    flow = parse_trafficking_flow(row.get('Case subject') or row.get('case_subject_raw'))
+
+    return {
+        'source_dataset': 'CRIME_GUN_DB',
+        'source_sheet': sheet_name,
+        'source_row': source_row,
+        'jurisdiction_state': state,
+        'jurisdiction_city': city,
+        'jurisdiction_method': method,
+        'dealer_name': str(ffl_name).strip() if ffl_name else None,
+        'dealer_city': row.get('City'),
+        'dealer_state': row.get('State'),
+        'dealer_ffl': row.get('license number'),
+        'in_dl2_program': convert_boolean(row.get('2022/23/24 DL2 FFL?')),
+        'is_top_trace_ffl': convert_boolean(row.get('Top trace FFL?')),
+        'is_revoked': convert_boolean(row.get('Revoked FFL?')),
+        'is_charged_or_sued': convert_boolean(row.get('FFL charged/sued?')),
+        'case_name': row.get('Case'),
+        'trafficking_origin': flow[0] if flow else None,
+        'trafficking_destination': flow[1] if flow else None,
+        'is_southwest_border': flow[1] == 'SWB' if flow else False,
+        'time_to_crime': parse_time_to_crime(row.get('Time-to-crime')),
+        'facts_narrative': row.get('Facts'),
+    }
+
+
+if __name__ == '__main__':
+    main()
 ```
 
 ---
 
-## File Structure
+## Files to Create/Modify
 
-### Files to Create
+| File | Action | Purpose |
+|------|--------|---------|
+| `src/brady/etl/process_crime_gun_db.py` | Create | Main ETL module |
+| `tests/test_process_crime_gun_db.py` | Create | Unit tests |
 
-| File | Purpose |
-|------|---------|
-| `src/brady/etl/process_crime_gun_db.py` | Main ETL module (new) |
-| `tests/test_process_crime_gun_db.py` | Unit tests (new) |
+---
 
-### Files to Modify
+## Schema (Minimal)
 
-| File | Changes |
-|------|---------|
-| `src/brady/etl/database.py` | Add UPSERT support, new columns |
-| `src/brady/dashboard/app.py` | Handle new source_dataset values |
+Only columns the dashboard actually uses:
 
-### Reference Files (Do Not Modify)
-
-| File | Purpose |
-|------|---------|
-| `v_2/PRD_Crime_Gun_DB_Integration.md` | Requirements reference |
-| `v_2/crime_gun_db_extractor.py` | Stub with TODO markers |
-| `v_2/test_fixtures.py` | Test case data |
-| `v_2/schema_additions.py` | Schema field definitions |
+```python
+# Columns for CRIME_GUN_DB records
+COLUMNS = [
+    'source_dataset',      # 'CRIME_GUN_DB'
+    'source_sheet',        # sheet name
+    'source_row',          # Excel row number
+    'jurisdiction_state',  # extracted state code
+    'jurisdiction_city',   # extracted city (if available)
+    'jurisdiction_method', # RECOVERY|COURT|TRAFFICKING|SHEET_DEFAULT|DEALER_STATE
+    'dealer_name',         # FFL name
+    'dealer_city',         # FFL city
+    'dealer_state',        # FFL state
+    'dealer_ffl',          # FFL license number
+    'in_dl2_program',      # boolean
+    'is_top_trace_ffl',    # boolean
+    'is_revoked',          # boolean
+    'is_charged_or_sued',  # boolean
+    'case_name',           # case citation
+    'trafficking_origin',  # origin state
+    'trafficking_destination', # destination state
+    'is_southwest_border', # boolean
+    'time_to_crime',       # integer days
+    'facts_narrative',     # case facts
+]
+```
 
 ---
 
 ## Quality Gates
 
-### Before Marking Complete
-
-- [ ] All 1,981 CG court doc FFLs records load without error
-- [ ] 54 Philadelphia Trace records have implicit jurisdiction = PA
-- [ ] Sheet7 is skipped (logged, not errored)
-- [ ] Backdated sheet handled (skip if empty)
+- [ ] All 1,981+ records load without error
 - [ ] Recovery locations parsed for 80%+ of Column R data
-- [ ] Court references parsed for standard federal district patterns
+- [ ] Court references mapped to state codes correctly
 - [ ] Trafficking flows extracted from arrow notation
-- [ ] Boolean fields converted correctly (Yes=True, No=False, Unclear=NULL)
-- [ ] Time-to-crime parsed to integer days (NULL for text)
-- [ ] Source traceability fields populated (source_dataset, source_sheet, source_row)
-- [ ] Jurisdiction method and confidence tracked
+- [ ] Boolean fields converted (Yes=True, No=False, others=NULL)
+- [ ] Time-to-crime parsed to integer days
 - [ ] All unit tests pass
-- [ ] Integration with main ETL works (DE Gunstat data preserved)
-- [ ] Dashboard displays combined data correctly
+- [ ] Dashboard displays combined DE Gunstat + Crime Gun DB data
 
 ---
 
-## Dependencies
+## What Was Removed (per review feedback)
 
-### Required (Already in requirements.txt)
-
-- `pandas` - DataFrame operations
-- `openpyxl` - Excel parsing
-- `termcolor` - Console output
-
-### Optional Additions
-
-```
-# requirements_additions.txt (from v_2/)
-pydantic>=2.0  # Validation models
-```
-
----
-
-## Common Pitfalls
-
-| Issue | Mitigation |
-|-------|------------|
-| **Row 2 garbage data** | Filter rows where FFL field contains "?" |
-| **Column offset in trace sheets** | Verify headers match expected before processing |
-| **Multi-location records** | Store as JSON array, not separate rows |
-| **Empty Backdated sheet** | Return empty DataFrame, don't error |
-| **Date parsing errors** | Catch ValueError, log warning, return NULL |
-| **State code validation** | Validate against `VALID_STATES` set, log invalid |
-| **International destinations** | Store country code, mark confidence as MEDIUM |
-| **Database data loss** | Use composite key upsert, never replace entire table |
-
----
-
-## ERD: Schema Updates
-
-```mermaid
-erDiagram
-    crime_gun_events {
-        text source_dataset "DE_GUNSTAT | CRIME_GUN_DB"
-        text source_sheet
-        int source_row
-        text jurisdiction_state
-        text jurisdiction_city
-        text jurisdiction_method "EXPLICIT | COURT | FLOW | IMPLICIT"
-        text jurisdiction_confidence "HIGH | MEDIUM | LOW"
-        text dealer_name
-        text dealer_city
-        text dealer_state
-        text dealer_ffl
-        text case_name
-        text case_court
-        text case_court_raw
-        text trafficking_origin
-        text trafficking_destination
-        text trafficking_flow_raw
-        bool is_domestic_violence
-        bool is_southwest_border
-        json recovery_locations
-        bool in_dl2_program
-        bool is_top_trace_ffl
-        bool is_revoked
-        bool is_charged_or_sued
-        text facts_narrative
-        int time_to_crime
-        timestamp created_at
-        timestamp updated_at
-    }
-```
+| Removed Feature | Reason |
+|-----------------|--------|
+| Confidence scoring | Dashboard doesn't use it |
+| JurisdictionResult dataclass | Plain tuple is simpler |
+| UPSERT with composite keys | Delete-then-insert is simpler for 2K rows |
+| JSON array for multi-locations | First location is sufficient |
+| 6 implementation phases | Consolidated to 2 phases |
+| Pydantic models | Overhead not needed for this scale |
+| `*_raw` duplicate columns | Keep only parsed values |
+| `jurisdiction_confidence` | Not used by dashboard |
 
 ---
 
 ## References
 
-### Internal References
-
 - PRD: `v_2/PRD_Crime_Gun_DB_Integration.md`
-- Implementation Guide: `v_2/IMPLEMENTATION_GUIDE.md`
-- Existing ETL Pattern: `src/brady/etl/process_gunstat.py:42` (parse_ffl_field)
-- Database Schema: `src/brady/etl/database.py:15`
-- Utilities: `src/brady/utils.py:5` (get_project_root)
-
-### External References
-
-- [Federal Court Abbreviations](https://www.yourdictionary.com/articles/federal-court-abbreviations)
-- [Pydantic for ETL Validation](https://medium.com/django-unleashed/using-pydantic-for-etl-clean-validate-and-transform-data-with-confidence-948157cdb543)
-- [pandas.read_excel Documentation](https://pandas.pydata.org/docs/reference/api/pandas.read_excel.html)
+- Existing ETL: `src/brady/etl/process_gunstat.py`
+- Database: `src/brady/etl/database.py`
 
 ---
 
-*Generated: January 27, 2026*
+*Generated: January 27, 2026 (v2.0 - Simplified)*
