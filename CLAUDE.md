@@ -4,6 +4,8 @@
 
 Crime gun supply chain analysis for the Brady Center. Tracks firearms linked to crimes by jurisdiction to identify high-risk dealers and trafficking patterns.
 
+**Live Dashboard:** https://brady-dashboard-production.up.railway.app/
+
 ## Quick Commands
 
 ```bash
@@ -34,10 +36,13 @@ src/brady/
 
 ## Database
 
-SQLite at `data/brady.db` with single table `crime_gun_events`.
+Supports PostgreSQL (production) and SQLite (local dev). Single table `crime_gun_events`.
+
+- **Production:** PostgreSQL on Railway (set `DATABASE_URL` env var)
+- **Local:** SQLite at `data/brady.db`
 
 Key columns:
-- `source_dataset`: 'DE_GUNSTAT' or 'CRIME_GUN_DB'
+- `source_dataset`: 'DE_GUNSTAT', 'PA_TRACE', or 'CG_COURT_DOC'
 - `jurisdiction_state/city/method`: Where crime occurred
 - `dealer_name/city/state/ffl`: FFL info
 - `trafficking_origin/destination`: Interstate flow
@@ -72,6 +77,24 @@ Key test files:
 - `data/raw/DE_Gunstat_Final.xlsx` - Delaware crime gun data
 - `data/raw/Crime_Gun_Dealer_DB.xlsx` - Court case records (skip Sheet7)
 - `data/brady.db` - SQLite database (generated)
+
+## Deployment
+
+Railway deployment with auto-deploy from `main` branch.
+
+```bash
+# Check deployment status
+railway status
+
+# View logs
+railway logs
+
+# Populate Railway database (run locally)
+DATABASE_URL="<railway-postgres-url>" uv run python -m brady.etl.process_gunstat
+DATABASE_URL="<railway-postgres-url>" uv run python -m brady.etl.process_crime_gun_db
+```
+
+Config files: `railway.toml`, `.railwayignore`, `Dockerfile`
 
 ## Code Style
 

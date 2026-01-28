@@ -2,6 +2,8 @@
 
 A data analysis toolkit for tracking firearm supply chains linked to crimes by jurisdiction.
 
+**Live Dashboard:** https://brady-dashboard-production.up.railway.app/
+
 ## Overview
 
 This project helps identify patterns in crime gun supply chains:
@@ -181,14 +183,32 @@ docker build -t brady-dashboard .
 docker buildx build --platform linux/amd64,linux/arm64 -t brady-dashboard .
 ```
 
-### Railway
+### Railway (Production)
 
-1. Connect your GitHub repository to Railway
-2. Railway will auto-detect the Dockerfile
-3. Set environment variables:
-   - `PORT=8501`
-   - `DATABASE_URL` (Railway PostgreSQL addon)
-4. Deploy
+The dashboard is deployed on Railway with automatic deployments from `main` branch.
+
+**Live URL:** https://brady-dashboard-production.up.railway.app/
+
+**Setup:**
+1. `railway init -n brady-dashboard`
+2. `railway up` (initial deploy)
+3. Connect GitHub repo in Railway dashboard for auto-deploy
+4. Add PostgreSQL database: Railway dashboard → New → Database → PostgreSQL
+5. Link database: Set `DATABASE_URL=${{Postgres.DATABASE_URL}}` on the dashboard service
+
+**Populate database:**
+```bash
+# Get the public DATABASE_URL from Railway
+railway variables -s Postgres | grep DATABASE_PUBLIC_URL
+
+# Run ETL with Railway database
+DATABASE_URL="<railway-postgres-url>" uv run python -m brady.etl.process_gunstat
+DATABASE_URL="<railway-postgres-url>" uv run python -m brady.etl.process_crime_gun_db
+```
+
+**Configuration files:**
+- `railway.toml` - Build and deploy settings
+- `.railwayignore` - Files excluded from deployment
 
 ### Google Cloud Run
 
