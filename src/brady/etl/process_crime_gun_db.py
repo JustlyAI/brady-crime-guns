@@ -12,10 +12,9 @@ import pandas as pd
 from termcolor import cprint
 
 from brady.etl.database import (
-    get_connection,
     get_db_path,
-    get_placeholder,
     is_postgres,
+    load_df_to_db,
     migrate_add_crime_gun_db_columns,
     count_by_source_dataset,
     delete_by_source_dataset,
@@ -321,10 +320,8 @@ def main():
         cprint(f"  Deleting {existing_count} existing Crime Gun DB records...", "yellow")
     delete_by_source_dataset(datasets_to_delete, db_path)
 
-    # Insert new records
-    with get_connection(db_path) as conn:
-        result_df.to_sql("crime_gun_events", conn, if_exists="append", index=False)
-        conn.commit()
+    # Insert new records using proper database function
+    load_df_to_db(result_df, "crime_gun_events", if_exists="append", db_path=db_path)
 
     cprint(f"Saved {len(result_df)} records to database", "green")
 
