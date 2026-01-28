@@ -282,12 +282,16 @@ def main():
             dealer_stats['in_dl2'] = False
 
         if 'is_revoked' in filtered_df.columns:
+            # Convert to boolean for aggregation (handles string/object types from DB)
+            filtered_df['is_revoked'] = filtered_df['is_revoked'].fillna(False).astype(bool)
             revoked_status = filtered_df.groupby('dealer_name')['is_revoked'].max().reset_index()
             dealer_stats = dealer_stats.merge(revoked_status, on='dealer_name', how='left')
         else:
             dealer_stats['is_revoked'] = False
 
         if 'is_charged' in filtered_df.columns:
+            # Convert to boolean for aggregation (handles string/object types from DB)
+            filtered_df['is_charged'] = filtered_df['is_charged'].fillna(False).astype(bool)
             charged_status = filtered_df.groupby('dealer_name')['is_charged'].max().reset_index()
             dealer_stats = dealer_stats.merge(charged_status, on='dealer_name', how='left')
         else:
