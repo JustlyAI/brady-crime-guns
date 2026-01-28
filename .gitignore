@@ -42,7 +42,9 @@ htmlcov/
 # Data (keep structure, ignore large files)
 data/raw/*.csv
 data/raw/*.xlsx
+data/processed/*.csv
 !data/raw/.gitkeep
+!data/processed/.gitkeep
 
 # Logs
 *.log
@@ -55,3 +57,9 @@ audit.jsonl
 
 # Jupyter
 .ipynb_checkpoints/
+
+# Claude
+
+.claude/
+CLAUDE.md
+**/CLAUDE.md
