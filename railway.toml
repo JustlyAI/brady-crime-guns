@@ -1,0 +1,9 @@
+# Railway deployment configuration
+# https://docs.railway.com/reference/config-as-code
+
+[build]
+builder = "dockerfile"
+
+[deploy]
+healthcheckPath = "/"
+restartPolicyType = "on_failure"

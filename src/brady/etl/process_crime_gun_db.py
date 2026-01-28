@@ -7,12 +7,19 @@ Dataset contains court case records linking FFLs to crime guns.
 """
 
 import re
-import sqlite3
 
 import pandas as pd
 from termcolor import cprint
 
-from brady.etl.database import get_db_path, migrate_add_crime_gun_db_columns
+from brady.etl.database import (
+    get_connection,
+    get_db_path,
+    get_placeholder,
+    is_postgres,
+    migrate_add_crime_gun_db_columns,
+    count_by_source_dataset,
+    delete_by_source_dataset,
+)
 from brady.utils import get_project_root
 
 
@@ -304,19 +311,18 @@ def main():
     cprint(f"\nTransformed {len(result_df)} records total", "green")
 
     # Delete existing Crime Gun DB records (old and new dataset names) and insert new
-    cprint(f"\nSaving to database: {db_path}", "yellow")
-    with sqlite3.connect(str(db_path)) as conn:
-        # Delete existing - includes legacy 'CRIME_GUN_DB' and new split datasets
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT COUNT(*) FROM crime_gun_events WHERE source_dataset IN ('CRIME_GUN_DB', 'PA_TRACE', 'CG_COURT_DOC')"
-        )
-        existing_count = cursor.fetchone()[0]
-        if existing_count > 0:
-            cprint(f"  Deleting {existing_count} existing Crime Gun DB records...", "yellow")
-        cursor.execute("DELETE FROM crime_gun_events WHERE source_dataset IN ('CRIME_GUN_DB', 'PA_TRACE', 'CG_COURT_DOC')")
+    db_name = "PostgreSQL" if is_postgres() else f"SQLite at {db_path}"
+    cprint(f"\nSaving to database: {db_name}", "yellow")
 
-        # Insert new records
+    # Delete existing - includes legacy 'CRIME_GUN_DB' and new split datasets
+    datasets_to_delete = ['CRIME_GUN_DB', 'PA_TRACE', 'CG_COURT_DOC']
+    existing_count = count_by_source_dataset(datasets_to_delete, db_path)
+    if existing_count > 0:
+        cprint(f"  Deleting {existing_count} existing Crime Gun DB records...", "yellow")
+    delete_by_source_dataset(datasets_to_delete, db_path)
+
+    # Insert new records
+    with get_connection(db_path) as conn:
         result_df.to_sql("crime_gun_events", conn, if_exists="append", index=False)
         conn.commit()
 

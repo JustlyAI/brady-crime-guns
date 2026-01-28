@@ -10,11 +10,11 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-import sqlite3
 from pathlib import Path
 from typing import Optional
 
 from brady.utils import get_project_root
+from brady.etl.database import is_postgres, query_db
 
 # Page config
 st.set_page_config(
@@ -51,7 +51,7 @@ st.markdown("""
 
 @st.cache_data
 def load_data() -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Load crime gun events and DL2 dealer data from SQLite (with CSV fallback)"""
+    """Load crime gun events and DL2 dealer data from database (PostgreSQL or SQLite)"""
     project_root = get_project_root()
     data_dir = project_root / "data"
 
@@ -59,16 +59,23 @@ def load_data() -> tuple[pd.DataFrame, pd.DataFrame]:
     events_path = data_dir / "processed" / "crime_gun_events.csv"
     dl2_path = data_dir / "processed" / "dl2_dealers.csv"
 
-    # Try SQLite first, fall back to CSV
-    if db_path.exists():
-        conn = sqlite3.connect(str(db_path))
-        events_df = pd.read_sql_query("SELECT * FROM crime_gun_events", conn)
-        conn.close()
-    elif events_path.exists():
-        events_df = pd.read_csv(events_path, encoding="utf-8")
-    else:
-        st.error(f"Data not found! Run ETL pipeline first: uv run python -m brady.etl.process_gunstat")
-        st.stop()
+    # Try database first (PostgreSQL if DATABASE_URL set, else SQLite), fall back to CSV
+    try:
+        if is_postgres():
+            events_df = query_db("SELECT * FROM crime_gun_events")
+        elif db_path.exists():
+            events_df = query_db("SELECT * FROM crime_gun_events")
+        elif events_path.exists():
+            events_df = pd.read_csv(events_path, encoding="utf-8")
+        else:
+            st.error("Data not found! Run ETL pipeline first: uv run python -m brady.etl.process_gunstat")
+            st.stop()
+    except Exception as e:
+        if events_path.exists():
+            events_df = pd.read_csv(events_path, encoding="utf-8")
+        else:
+            st.error(f"Database error: {e}\nRun ETL pipeline first: uv run python -m brady.etl.process_gunstat")
+            st.stop()
 
     dl2_df = pd.read_csv(dl2_path, encoding="utf-8") if dl2_path.exists() else pd.DataFrame()
 
